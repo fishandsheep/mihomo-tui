@@ -4,34 +4,54 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
-)
-
-const (
-	ansiReset      = "\033[0m"
-	ansiBorder     = "\033[38;5;245m"
-	ansiMuted      = "\033[38;5;250m"
-	ansiStatus     = "\033[38;5;81m"
-	ansiGreen      = "\033[38;5;114m"
-	ansiRed        = "\033[38;5;203m"
-	ansiYellow     = "\033[38;5;221m"
-	ansiPaneFocus  = "\033[38;5;229m"
-	ansiPaneAccent = "\033[38;5;186m"
-	ansiTabActive  = "\033[38;5;81m"
-	ansiSelectFg   = "\033[38;5;255m"
-	ansiSelectBg   = "\033[48;5;67m"
-	ansiLog        = "\033[38;5;222m"
 )
 
 type Pane int
 
 const (
 	PaneSessions Pane = iota
+	PaneTUN
 	PaneModes
 	PaneGroups
 	PaneNodes
 	PaneMain
 )
+
+const (
+	footerHeight   = 1
+	mainChromeRows = 4
+)
+
+var (
+	colorGreen = lipgloss.Color("2")
+	colorGray  = lipgloss.Color("245")
+	colorWarn  = lipgloss.Color("11")
+	colorErr   = lipgloss.Color("9")
+
+	borderFocused   = lipgloss.NewStyle().Foreground(colorGreen)
+	borderInactive  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	titleFocused    = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
+	titleInactive   = lipgloss.NewStyle().Foreground(colorGray)
+	textStyle       = lipgloss.NewStyle()
+	mutedText       = lipgloss.NewStyle().Foreground(colorGray)
+	metaText        = lipgloss.NewStyle().Foreground(colorGray)
+	currentText     = lipgloss.NewStyle().Foreground(colorGreen)
+	tabActive       = lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
+	tabInactive     = lipgloss.NewStyle().Foreground(colorGray)
+	mainInfoLabel   = lipgloss.NewStyle().Foreground(colorGray)
+	mainToastNormal = lipgloss.NewStyle().Foreground(colorWarn)
+	mainToastErr    = lipgloss.NewStyle().Foreground(colorErr)
+)
+
+type Item struct {
+	Primary        string
+	Secondary      string
+	Current        bool
+	PrimaryColor   string
+	SecondaryColor string
+}
 
 type ScreenMode struct {
 	Name   string
@@ -63,17 +83,27 @@ type State struct {
 	DelaySupported bool
 
 	ActivePane   Pane
-	SessionItems []string
-	ModeItems    []string
-	GroupItems   []string
-	NodeItems    []string
+	SessionItems []Item
+	TUNItems     []Item
+	ModeItems    []Item
+	GroupItems   []Item
+	NodeItems    []Item
 
-	SessionCursor int
-	ModeCursor    int
-	GroupCursor   int
-	NodeCursor    int
+	SessionCursor  int
+	TUNCursor      int
+	ModeCursor     int
+	GroupCursor    int
+	NodeCursor     int
+	SessionOffset  int
+	TUNOffset      int
+	ModeOffset     int
+	GroupOffset    int
+	NodeOffset     int
+	MainOffset     int
+	CurrentSession int
+	CurrentMode    int
+	CurrentNode    int
 
-	MainTab      string
 	MainTabIndex int
 	MainTabs     []string
 	Detail       string
@@ -98,15 +128,14 @@ type TabRect struct {
 }
 
 type Layout struct {
-	Status     Rect
-	Sessions   Rect
-	Groups     Rect
-	Nodes      Rect
-	Modes      Rect
-	Main       Rect
-	CommandLog Rect
-	Footer     Rect
-	MainTabs   []TabRect
+	Sessions Rect
+	TUN      Rect
+	Modes    Rect
+	Groups   Rect
+	Nodes    Rect
+	Main     Rect
+	Footer   Rect
+	MainTabs []TabRect
 }
 
 func BestScreenModeIndex(width, height int) int {
@@ -124,92 +153,72 @@ func Render(m State) string {
 	}
 
 	layout := ComputeLayout(m)
-
-	status := box("Status", []string{
-		fmt.Sprintf("%s  %s", statusGlyph(m.Connected), empty(m.Instance)),
-		fmt.Sprintf("ctl: %s", empty(m.Controller)),
-		fmt.Sprintf("mode:%s  ver:%s  delay:%s", empty(m.Mode), empty(m.Version), yesNo(m.DelaySupported)),
-	}, layout.Status.W, layout.Status.H, false, -1)
-	sessions := box("[1] Sessions  click/enter", m.SessionItems, layout.Sessions.W, layout.Sessions.H, m.ActivePane == PaneSessions, m.SessionCursor)
-	groups := box("[3] Groups  click/enter", m.GroupItems, layout.Groups.W, layout.Groups.H, m.ActivePane == PaneGroups, m.GroupCursor)
-	nodes := box("[4] Nodes  click/space", m.NodeItems, layout.Nodes.W, layout.Nodes.H, m.ActivePane == PaneNodes, m.NodeCursor)
-	modes := box("[2] Modes  click/space", m.ModeItems, layout.Modes.W, layout.Modes.H, m.ActivePane == PaneModes, m.ModeCursor)
-	left := vjoin(status, sessions, groups, nodes, modes)
-
-	mainTitle := "[0] Main  " + tabsLabel(m.MainTabs, m.MainTabIndex)
-	main := box(mainTitle, strings.Split(strings.TrimSpace(m.Detail), "\n"), layout.Main.W, layout.Main.H, m.ActivePane == PaneMain, -1)
-	logLines := []string{"ready"}
-	if m.Toast != "" {
-		logLines = []string{m.Toast}
+	cols := [][]string{
+		vjoin(
+			renderListPane("1-Session", layout.Sessions, m.ActivePane == PaneSessions, m.SessionItems, m.SessionCursor, m.SessionOffset),
+			renderListPane("TUN", layout.TUN, m.ActivePane == PaneTUN, m.TUNItems, m.TUNCursor, m.TUNOffset),
+			renderListPane("2-Modes", layout.Modes, m.ActivePane == PaneModes, m.ModeItems, m.ModeCursor, m.ModeOffset),
+			renderListPane("3-Groups", layout.Groups, m.ActivePane == PaneGroups, m.GroupItems, m.GroupCursor, m.GroupOffset),
+		),
+		renderListPane("4-Nodes", layout.Nodes, m.ActivePane == PaneNodes, m.NodeItems, m.NodeCursor, m.NodeOffset),
+		renderMainPane("0-Main", layout.Main, m),
 	}
-	commandLog := box("Command log", logLines, layout.CommandLog.W, layout.CommandLog.H, false, -1)
-	right := vjoin(main, commandLog)
 
-	footer := colorize(ansiMuted, pad(m.Footer, layout.Footer.W))
-	lines := hjoin([][]string{left, right}, " ")
-	lines = append(lines, footer)
+	lines := hjoin(cols, " ")
+	lines = append(lines, mutedText.Render(padPlain(m.Footer, layout.Footer.W)))
 	return strings.Join(lines, "\n")
 }
 
 func ComputeLayout(m State) Layout {
-	canvasWidth := m.ScreenMode.Width
-	canvasHeight := m.ScreenMode.Height
-
-	footerHeight := 1
+	canvasWidth := m.TerminalWidth
+	canvasHeight := m.TerminalHeight
+	if canvasWidth <= 0 {
+		canvasWidth = m.ScreenMode.Width
+	}
+	if canvasHeight <= 0 {
+		canvasHeight = m.ScreenMode.Height
+	}
 	bodyHeight := canvasHeight - footerHeight
 
-	leftWidth := 42
-	if canvasWidth >= 156 {
-		leftWidth = 46
+	col1 := 30
+	switch {
+	case canvasWidth >= 156:
+		col1 = 34
+	case canvasWidth >= 128:
+		col1 = 32
 	}
-	rightWidth := canvasWidth - leftWidth - 1
+	remaining := canvasWidth - col1 - 2
+	col2 := remaining / 2
+	col3 := remaining - col2
 
-	statusHeight := 4
 	sessionsHeight := 6
-	groupsHeight := 8
+	tunHeight := 4
 	modesHeight := 5
-	commandLogHeight := 3
-	mainHeight := bodyHeight - commandLogHeight
-	nodesHeight := bodyHeight - statusHeight - sessionsHeight - groupsHeight - modesHeight
-	if nodesHeight < 6 {
-		nodesHeight = 6
-		groupsHeight = max(6, bodyHeight-statusHeight-sessionsHeight-modesHeight-nodesHeight)
+	groupsHeight := bodyHeight - sessionsHeight - tunHeight - modesHeight
+	if groupsHeight < 7 {
+		groupsHeight = 7
+		sessionsHeight = max(5, bodyHeight-groupsHeight-tunHeight-modesHeight)
 	}
 
 	layout := Layout{
-		Status:     Rect{X: 0, Y: 0, W: leftWidth, H: statusHeight},
-		Sessions:   Rect{X: 0, Y: statusHeight, W: leftWidth, H: sessionsHeight},
-		Groups:     Rect{X: 0, Y: statusHeight + sessionsHeight, W: leftWidth, H: groupsHeight},
-		Nodes:      Rect{X: 0, Y: statusHeight + sessionsHeight + groupsHeight, W: leftWidth, H: nodesHeight},
-		Modes:      Rect{X: 0, Y: statusHeight + sessionsHeight + groupsHeight + nodesHeight, W: leftWidth, H: modesHeight},
-		Main:       Rect{X: leftWidth + 1, Y: 0, W: rightWidth, H: mainHeight},
-		CommandLog: Rect{X: leftWidth + 1, Y: mainHeight, W: rightWidth, H: commandLogHeight},
-		Footer:     Rect{X: 0, Y: bodyHeight, W: canvasWidth, H: footerHeight},
+		Sessions: Rect{X: 0, Y: 0, W: col1, H: sessionsHeight},
+		TUN:      Rect{X: 0, Y: sessionsHeight, W: col1, H: tunHeight},
+		Modes:    Rect{X: 0, Y: sessionsHeight + tunHeight, W: col1, H: modesHeight},
+		Groups:   Rect{X: 0, Y: sessionsHeight + tunHeight + modesHeight, W: col1, H: groupsHeight},
+		Nodes:    Rect{X: col1 + 1, Y: 0, W: col2, H: bodyHeight},
+		Main:     Rect{X: col1 + col2 + 2, Y: 0, W: col3, H: bodyHeight},
+		Footer:   Rect{X: 0, Y: bodyHeight, W: canvasWidth, H: footerHeight},
 	}
 	layout.MainTabs = computeMainTabRects(layout.Main, m.MainTabs)
 	return layout
 }
 
-func computeMainTabRects(main Rect, tabs []string) []TabRect {
-	if len(tabs) == 0 {
-		return nil
-	}
-	prefix := "[0] Main  "
-	x := main.X + 1 + textWidth(prefix)
-	out := make([]TabRect, 0, len(tabs))
-	for i, tab := range tabs {
-		label := tab
-		w := textWidth(label)
-		out = append(out, TabRect{
-			Index: i,
-			Rect:  Rect{X: x, Y: main.Y, W: w, H: 1},
-		})
-		x += w
-		if i < len(tabs)-1 {
-			x += textWidth(" | ")
-		}
-	}
-	return out
+func ContentHeight(rect Rect) int {
+	return max(0, rect.H-2)
+}
+
+func MainViewportHeight(rect Rect) int {
+	return max(0, ContentHeight(rect)-mainChromeRows)
 }
 
 func renderTooSmall(m State) string {
@@ -224,39 +233,173 @@ func renderTooSmall(m State) string {
 	return strings.Join(lines, "\n")
 }
 
-func box(title string, items []string, width, height int, focused bool, cursor int) []string {
+func renderListPane(title string, rect Rect, focused bool, items []Item, cursor, offset int) []string {
+	visible := ContentHeight(rect)
+	body := make([]string, 0, visible)
+	for row := 0; row < visible; row++ {
+		index := offset + row
+		if index >= len(items) {
+			body = append(body, mutedText.Render(strings.Repeat(" ", max(0, rect.W-2))))
+			continue
+		}
+		body = append(body, renderItem(items[index], max(0, rect.W-2), index == cursor))
+	}
+	return renderPane(title, rect, focused, body)
+}
+
+func renderMainPane(title string, rect Rect, state State) []string {
+	innerWidth := max(0, rect.W-2)
+	chrome := []string{
+		renderMainInfoLine(innerWidth,
+			fmt.Sprintf("session %s", empty(state.Instance)),
+			fmt.Sprintf("status %s", empty(state.ConnectionText)),
+			fmt.Sprintf("delay %s", yesNo(state.DelaySupported)),
+		),
+		renderMainInfoLine(innerWidth,
+			fmt.Sprintf("ctl %s", empty(state.Controller)),
+			fmt.Sprintf("mode %s", empty(state.Mode)),
+			fmt.Sprintf("ver %s/%s", empty(state.Version), empty(state.Meta)),
+		),
+		renderToastLine(state.Toast, innerWidth),
+		renderTabsLine(state.MainTabs, state.MainTabIndex, innerWidth),
+	}
+
+	detailLines := splitDetail(state.Detail)
+	visible := MainViewportHeight(rect)
+	body := append([]string{}, chrome...)
+	for row := 0; row < visible; row++ {
+		index := state.MainOffset + row
+		if index >= len(detailLines) {
+			body = append(body, mutedText.Render(strings.Repeat(" ", innerWidth)))
+			continue
+		}
+		body = append(body, textStyle.Render(padPlain(detailLines[index], innerWidth)))
+	}
+	return renderPane(title, rect, state.ActivePane == PaneMain, body)
+}
+
+func renderPane(title string, rect Rect, focused bool, body []string) []string {
+	width := rect.W
+	if width < 4 {
+		width = 4
+	}
+	height := rect.H
 	if height < 3 {
 		height = 3
 	}
 	innerWidth := width - 2
 	contentHeight := height - 2
-
-	top := colorize(borderColor(focused), "┌"+fillTitle(title, innerWidth, focused)+"┐")
-	lines := []string{top}
-	for i := 0; i < contentHeight; i++ {
-		text := pad("", innerWidth)
-		if i < len(items) {
-			text = pad(items[i], innerWidth)
-			if cursor >= 0 && i == cursor {
-				text = selectedText(pad("> "+trim(items[i], innerWidth-2), innerWidth))
-			} else {
-				text = contentText(text)
-			}
-		} else {
-			text = contentText(text)
-		}
-		lines = append(lines, colorize(borderColor(focused), "│")+text+colorize(borderColor(focused), "│"))
+	for len(body) < contentHeight {
+		body = append(body, strings.Repeat(" ", innerWidth))
 	}
-	lines = append(lines, colorize(borderColor(focused), "└"+strings.Repeat("─", innerWidth)+"┘"))
-	return lines
+	if len(body) > contentHeight {
+		body = body[:contentHeight]
+	}
+
+	border := borderInactive
+	titleStyle := titleInactive
+	if focused {
+		border = borderFocused
+		titleStyle = titleFocused
+	}
+
+	titleText := " " + title + " "
+	renderedTitle := trimPlain(titleText, innerWidth)
+	line := border.Render("╭") + titleStyle.Render(renderedTitle)
+	if remain := innerWidth - textWidth(renderedTitle); remain > 0 {
+		line += border.Render(strings.Repeat("─", remain))
+	}
+	line += border.Render("╮")
+
+	out := []string{line}
+	for _, item := range body {
+		out = append(out, border.Render("│")+padStyled(item, innerWidth)+border.Render("│"))
+	}
+	out = append(out, border.Render("╰"+strings.Repeat("─", innerWidth)+"╯"))
+	return out
 }
 
-func fillTitle(title string, width int, focused bool) string {
-	title = " " + title + " "
-	if width <= textWidth(title) {
-		return titleText(trim(title, width), focused)
+func renderItem(item Item, width int, selected bool) string {
+	prefixPlain := "  "
+	prefixStyled := "  "
+	primaryStyle := textStyle
+	secondaryStyle := metaText
+	if item.PrimaryColor != "" {
+		primaryStyle = primaryStyle.Foreground(lipgloss.Color(item.PrimaryColor))
 	}
-	return titleText(title, focused) + colorize(borderColor(focused), strings.Repeat("─", width-textWidth(title)))
+	if item.SecondaryColor != "" {
+		secondaryStyle = secondaryStyle.Foreground(lipgloss.Color(item.SecondaryColor))
+	}
+	if item.Current {
+		primaryStyle = currentText
+	}
+	if selected {
+		prefixPlain = "* "
+		prefixStyled = "* "
+	}
+
+	remaining := max(0, width-textWidth(prefixPlain))
+	var line string
+	switch {
+	case item.Secondary == "":
+		line = prefixStyled + primaryStyle.Render(trimPlain(item.Primary, remaining))
+	case textWidth(item.Primary)+2+textWidth(item.Secondary) <= remaining:
+		line = prefixStyled +
+			primaryStyle.Render(item.Primary) +
+			textStyle.Render("  ") +
+			secondaryStyle.Render(item.Secondary)
+	default:
+		line = prefixStyled + primaryStyle.Render(trimPlain(item.Primary+"  "+item.Secondary, remaining))
+	}
+
+	return padStyled(line, width)
+}
+
+func renderMainInfoLine(width int, parts ...string) string {
+	return mainInfoLabel.Render(padPlain(strings.Join(parts, "  "), width))
+}
+
+func renderToastLine(toast string, width int) string {
+	if toast == "" {
+		return mutedText.Render(strings.Repeat(" ", width))
+	}
+	style := mainToastNormal
+	lower := strings.ToLower(toast)
+	if strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "unreachable") || strings.Contains(lower, "timeout") {
+		style = mainToastErr
+	}
+	return padStyled(style.Render(trimPlain(toast, width)), width)
+}
+
+func renderTabsLine(tabs []string, active, width int) string {
+	parts := make([]string, 0, len(tabs))
+	for i, tab := range tabs {
+		label := " " + tab + " "
+		if i == active {
+			parts = append(parts, tabActive.Render(label))
+			continue
+		}
+		parts = append(parts, tabInactive.Render(label))
+	}
+	return padStyled(strings.Join(parts, ""), width)
+}
+
+func computeMainTabRects(main Rect, tabs []string) []TabRect {
+	if len(tabs) == 0 {
+		return nil
+	}
+	x := main.X + 1
+	y := main.Y + 1 + (mainChromeRows - 1)
+	out := make([]TabRect, 0, len(tabs))
+	for i, tab := range tabs {
+		label := " " + tab + " "
+		out = append(out, TabRect{
+			Index: i,
+			Rect:  Rect{X: x, Y: y, W: textWidth(label), H: 1},
+		})
+		x += textWidth(label)
+	}
+	return out
 }
 
 func hjoin(cols [][]string, gap string) []string {
@@ -291,37 +434,40 @@ func vjoin(blocks ...[]string) []string {
 	return out
 }
 
-func tabsLabel(tabs []string, active int) string {
-	parts := make([]string, 0, len(tabs))
-	for i, tab := range tabs {
-		if i == active {
-			parts = append(parts, colorize(ansiTabActive, tab))
-			continue
-		}
-		parts = append(parts, colorize(ansiMuted, tab))
+func splitDetail(detail string) []string {
+	trimmed := strings.TrimSpace(detail)
+	if trimmed == "" {
+		return []string{""}
 	}
-	return strings.Join(parts, colorize(ansiBorder, " | "))
+	return strings.Split(trimmed, "\n")
 }
 
-func pad(text string, width int) string {
-	text = trim(text, width)
-	if width <= textWidth(text) {
-		return text
-	}
-	return text + strings.Repeat(" ", width-textWidth(text))
-}
-
-func trim(text string, width int) string {
+func trimPlain(text string, width int) string {
 	if width <= 0 {
 		return ""
 	}
 	if textWidth(text) <= width {
 		return text
 	}
-	if width <= 1 {
+	if width == 1 {
 		return "…"
 	}
 	return runewidth.Truncate(text, width-1, "") + "…"
+}
+
+func padPlain(text string, width int) string {
+	text = trimPlain(text, width)
+	if pad := width - textWidth(text); pad > 0 {
+		return text + strings.Repeat(" ", pad)
+	}
+	return text
+}
+
+func padStyled(text string, width int) string {
+	if pad := width - lipgloss.Width(text); pad > 0 {
+		return text + strings.Repeat(" ", pad)
+	}
+	return text
 }
 
 func textWidth(text string) int {
@@ -342,20 +488,6 @@ func yesNo(value bool) string {
 	return "no"
 }
 
-func statusWord(value bool) string {
-	if value {
-		return "up"
-	}
-	return "down"
-}
-
-func statusGlyph(value bool) string {
-	if value {
-		return colorize(ansiGreen, "✓")
-	}
-	return colorize(ansiRed, "×")
-}
-
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -363,42 +495,18 @@ func max(a, b int) int {
 	return b
 }
 
-func colorize(style, text string) string {
-	return style + text + ansiReset
-}
-
-func borderColor(focused bool) string {
-	if focused {
-		return ansiPaneFocus
-	}
-	return ansiBorder
-}
-
-func titleText(text string, focused bool) string {
-	if focused {
-		return colorize(ansiPaneAccent, text)
-	}
-	return colorize(ansiStatus, text)
-}
-
-func selectedText(text string) string {
-	return ansiSelectBg + ansiSelectFg + text + ansiReset
-}
-
-func contentText(text string) string {
-	return colorize(ansiMuted, text)
-}
-
 func PaneAt(layout Layout, x, y int) Pane {
 	switch {
 	case layout.Sessions.Contains(x, y):
 		return PaneSessions
+	case layout.TUN.Contains(x, y):
+		return PaneTUN
+	case layout.Modes.Contains(x, y):
+		return PaneModes
 	case layout.Groups.Contains(x, y):
 		return PaneGroups
 	case layout.Nodes.Contains(x, y):
 		return PaneNodes
-	case layout.Modes.Contains(x, y):
-		return PaneModes
 	case layout.Main.Contains(x, y):
 		return PaneMain
 	default:
@@ -406,14 +514,14 @@ func PaneAt(layout Layout, x, y int) Pane {
 	}
 }
 
-func ListIndexAt(rect Rect, x, y, itemCount int) (int, bool) {
+func ListIndexAt(rect Rect, x, y, itemCount, offset int) (int, bool) {
 	if !rect.Contains(x, y) || itemCount == 0 {
 		return 0, false
 	}
 	if y <= rect.Y || y >= rect.Y+rect.H-1 {
 		return 0, false
 	}
-	index := y - rect.Y - 1
+	index := offset + y - rect.Y - 1
 	if index < 0 || index >= itemCount {
 		return 0, false
 	}

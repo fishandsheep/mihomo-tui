@@ -85,6 +85,12 @@ func (c *Client) PutMode(ctx context.Context, mode string) error {
 	return c.doJSON(ctx, http.MethodPut, "/configs", map[string]string{"mode": mode}, nil)
 }
 
+func (c *Client) PatchTUN(ctx context.Context, enabled bool) error {
+	return c.doJSON(ctx, http.MethodPatch, "/configs", map[string]any{
+		"tun": map[string]bool{"enable": enabled},
+	}, nil)
+}
+
 func (c *Client) GetProxies(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
 	err := c.doJSON(ctx, http.MethodGet, "/proxies", nil, &out)

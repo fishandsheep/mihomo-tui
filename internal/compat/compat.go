@@ -28,7 +28,9 @@ type Version struct {
 }
 
 type Config struct {
-	Mode string
+	Mode         string
+	TunEnabled   bool
+	TunSupported bool
 }
 
 type DelayHistory struct {
@@ -72,8 +74,11 @@ func NormalizeVersion(raw map[string]any) Version {
 }
 
 func NormalizeConfig(raw map[string]any) Config {
+	tunRaw, tunOK := raw["tun"].(map[string]any)
 	return Config{
-		Mode: strings.ToLower(stringValue(raw["mode"])),
+		Mode:         strings.ToLower(stringValue(raw["mode"])),
+		TunEnabled:   boolValue(tunRaw["enable"]),
+		TunSupported: tunOK,
 	}
 }
 

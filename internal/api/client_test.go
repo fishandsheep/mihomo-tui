@@ -80,6 +80,34 @@ func TestUpdateProxyBody(t *testing.T) {
 	}
 }
 
+func TestPatchTUNBody(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/configs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		tun, ok := body["tun"].(map[string]any)
+		if !ok || tun["enable"] != true {
+			t.Fatalf("unexpected tun body: %#v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "", false)
+	if err := client.PatchTUN(context.Background(), true); err != nil {
+		t.Fatalf("PatchTUN failed: %v", err)
+	}
+}
+
 func TestDelayMissingEndpointMapsToCapabilityFallback(t *testing.T) {
 	t.Parallel()
 

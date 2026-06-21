@@ -7,10 +7,26 @@
 
 - multi-session controller switching
 - mode switching: `rule`, `global`, `direct`
+- independent TUN `on/off` toggle
 - proxy group browsing
 - node switching
 - delay testing
-- resize-safe, lazygit-inspired terminal layout
+- full-screen, resize-safe, lazygit-inspired terminal layout
+- mouse-aware panes with double-click apply
+
+## Interaction
+
+- `tab` cycles panes
+- `j/k` or arrows move inside active pane
+- `pgup/pgdn`, `home/end` scroll long panes
+- `space` applies action in active pane
+  - modes: switch mode
+  - TUN: toggle `on/off`
+  - nodes: switch proxy
+- mouse
+  - single click: focus/select
+  - double click: apply action
+  - wheel: scroll hovered pane
 
 ## Build
 

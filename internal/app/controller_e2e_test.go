@@ -10,11 +10,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/metacubex/mihomo-tui/internal/compat"
 	"github.com/metacubex/mihomo-tui/internal/profile"
+	"github.com/metacubex/mihomo-tui/internal/view"
 )
 
 func TestControllerServiceEndToEndMultiProfileIsolation(t *testing.T) {
@@ -41,6 +43,10 @@ func TestControllerServiceEndToEndMultiProfileIsolation(t *testing.T) {
 		InitialProfile: "alpha",
 		Service:        controllerService{},
 	})
+	model.width = 156
+	model.height = 44
+	now := time.Unix(100, 0)
+	model.now = func() time.Time { return now }
 
 	msg := model.loadSnapshotCmd()()
 	next, _ := model.Update(msg)
@@ -51,7 +57,12 @@ func TestControllerServiceEndToEndMultiProfileIsolation(t *testing.T) {
 
 	model.activePane = PaneSessions
 	model.sessionCursor = 1
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	layout := view.ComputeLayout(model.renderState())
+	click := tea.MouseMsg{X: layout.Sessions.X + 2, Y: layout.Sessions.Y + 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	next, cmd := model.Update(click)
+	model = next.(Model)
+	now = now.Add(200 * time.Millisecond)
+	next, cmd = model.Update(click)
 	model = next.(Model)
 	msg = cmd()
 	next, _ = model.Update(msg)
@@ -70,9 +81,21 @@ func TestControllerServiceEndToEndMultiProfileIsolation(t *testing.T) {
 		t.Fatalf("alpha state polluted: %s", serverA.state.mode)
 	}
 
-	model.activePane = PaneGroups
-	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tunMsg := model.setTUNCmd(true)()
+	next, _ = model.Update(tunMsg)
 	model = next.(Model)
+	if !serverB.state.tun {
+		t.Fatalf("expected beta tun enabled")
+	}
+	if serverA.state.tun {
+		t.Fatalf("alpha tun polluted")
+	}
+
+	modeMsg = model.setModeCmd("rule")()
+	next, _ = model.Update(modeMsg)
+	model = next.(Model)
+
+	model.activePane = PaneNodes
 	model.nodeCursor = 1
 	next, cmd = model.Update(tea.KeyMsg{Type: tea.KeySpace})
 	model = next.(Model)
@@ -104,6 +127,7 @@ type mockControllerState struct {
 	name     string
 	mode     string
 	groupNow string
+	tun      bool
 }
 
 func newMockController(name string) *mockController {
@@ -116,11 +140,18 @@ func newMockController(name string) *mockController {
 		case r.Method == http.MethodGet && r.URL.Path == "/version":
 			json.NewEncoder(w).Encode(map[string]string{"version": "1.0.0", "meta": name})
 		case r.Method == http.MethodGet && r.URL.Path == "/configs":
-			json.NewEncoder(w).Encode(map[string]string{"mode": state.mode})
+			json.NewEncoder(w).Encode(map[string]any{"mode": state.mode, "tun": map[string]bool{"enable": state.tun}})
 		case r.Method == http.MethodPatch && r.URL.Path == "/configs":
-			var body map[string]string
+			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			state.mode = body["mode"]
+			if mode, ok := body["mode"].(string); ok {
+				state.mode = mode
+			}
+			if tun, ok := body["tun"].(map[string]any); ok {
+				if enabled, ok := tun["enable"].(bool); ok {
+					state.tun = enabled
+				}
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/proxies":
 			json.NewEncoder(w).Encode(map[string]any{
@@ -184,7 +215,7 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 		case "/version":
 			json.NewEncoder(w).Encode(map[string]string{"version": "1.0.0"})
 		case "/configs":
-			json.NewEncoder(w).Encode(map[string]string{"mode": "rule"})
+			json.NewEncoder(w).Encode(map[string]any{"mode": "rule", "tun": map[string]bool{"enable": false}})
 		case "/proxies":
 			json.NewEncoder(w).Encode(map[string]any{
 				"proxies": map[string]any{

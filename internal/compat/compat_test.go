@@ -66,3 +66,18 @@ func TestNormalizeProxiesClashCompatibleShape(t *testing.T) {
 		t.Fatalf("expected default test url, got %q", proxies["NodeB"].TestURL)
 	}
 }
+
+func TestNormalizeConfigReadsTUN(t *testing.T) {
+	t.Parallel()
+
+	config := NormalizeConfig(map[string]any{
+		"mode": "global",
+		"tun":  map[string]any{"enable": true},
+	})
+	if config.Mode != "global" {
+		t.Fatalf("unexpected mode: %s", config.Mode)
+	}
+	if !config.TunSupported || !config.TunEnabled {
+		t.Fatalf("unexpected tun config: %#v", config)
+	}
+}
