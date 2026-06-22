@@ -14,6 +14,56 @@
 - full-screen, resize-safe, lazygit-inspired terminal layout
 - mouse-aware panes with double-click apply
 
+## Quick Start
+
+Requirements:
+
+- Mihomo or Clash-compatible controller already running
+- `external-controller` enabled, for example `http://127.0.0.1:9090`
+- controller `secret` available if authentication enabled
+- Node.js or Bun installed if you want to run from npm package
+
+Run without installing:
+
+```bash
+npx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
+```
+
+Or with Bun:
+
+```bash
+bunx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
+```
+
+Save controller as reusable profile:
+
+```bash
+npx mihomo-tui@latest profile add \
+  --name local \
+  --controller http://127.0.0.1:9090 \
+  --secret your-secret \
+  --default
+```
+
+Open later with saved profile:
+
+```bash
+npx mihomo-tui@latest open --profile local
+```
+
+Check installed version:
+
+```bash
+npx mihomo-tui@latest --version
+```
+
+If you prefer local binary:
+
+```bash
+go build -o ./bin/mihomo-tui ./cmd/tui
+./bin/mihomo-tui open --controller http://127.0.0.1:9090 --secret your-secret
+```
+
 ## Interaction
 
 - `tab` cycles panes

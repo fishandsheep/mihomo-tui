@@ -7,7 +7,7 @@ export const platforms = [
   {
     id: "darwin-arm64",
     packageDir: "packages/darwin-arm64",
-    packageName: "@metacubex/mihomo-tui-darwin-arm64",
+    packageName: "@qinshower/mihomo-tui-darwin-arm64",
     goos: "darwin",
     goarch: "arm64",
     os: "darwin",
@@ -18,7 +18,7 @@ export const platforms = [
   {
     id: "darwin-x64",
     packageDir: "packages/darwin-x64",
-    packageName: "@metacubex/mihomo-tui-darwin-x64",
+    packageName: "@qinshower/mihomo-tui-darwin-x64",
     goos: "darwin",
     goarch: "amd64",
     os: "darwin",
@@ -29,7 +29,7 @@ export const platforms = [
   {
     id: "linux-arm64-gnu",
     packageDir: "packages/linux-arm64-gnu",
-    packageName: "@metacubex/mihomo-tui-linux-arm64-gnu",
+    packageName: "@qinshower/mihomo-tui-linux-arm64-gnu",
     goos: "linux",
     goarch: "arm64",
     os: "linux",
@@ -40,7 +40,7 @@ export const platforms = [
   {
     id: "linux-x64-gnu",
     packageDir: "packages/linux-x64-gnu",
-    packageName: "@metacubex/mihomo-tui-linux-x64-gnu",
+    packageName: "@qinshower/mihomo-tui-linux-x64-gnu",
     goos: "linux",
     goarch: "amd64",
     os: "linux",
@@ -51,7 +51,7 @@ export const platforms = [
   {
     id: "win32-arm64-msvc",
     packageDir: "packages/win32-arm64-msvc",
-    packageName: "@metacubex/mihomo-tui-win32-arm64-msvc",
+    packageName: "@qinshower/mihomo-tui-win32-arm64-msvc",
     goos: "windows",
     goarch: "arm64",
     os: "win32",
@@ -62,7 +62,7 @@ export const platforms = [
   {
     id: "win32-x64-msvc",
     packageDir: "packages/win32-x64-msvc",
-    packageName: "@metacubex/mihomo-tui-win32-x64-msvc",
+    packageName: "@qinshower/mihomo-tui-win32-x64-msvc",
     goos: "windows",
     goarch: "amd64",
     os: "win32",

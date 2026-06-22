@@ -1,5 +1,5 @@
 {
-  "name": "@metacubex/mihomo-tui-win32-x64-msvc",
+  "name": "@qinshower/mihomo-tui-win32-x64-msvc",
   "version": "0.0.0-dev",
   "description": "mihomo-tui binary for win32 x64 msvc.",
   "type": "module",

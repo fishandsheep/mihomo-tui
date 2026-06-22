@@ -1,5 +1,5 @@
 {
-  "name": "@metacubex/mihomo-tui-linux-x64-gnu",
+  "name": "@qinshower/mihomo-tui-linux-x64-gnu",
   "version": "0.0.0-dev",
   "description": "mihomo-tui binary for linux x64 gnu.",
   "type": "module",
