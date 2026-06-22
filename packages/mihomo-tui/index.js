@@ -1,1 +1,1 @@
-export * from "@metacubex/mihomo-tui";
+export * from "@qinshower/mihomo-tui";

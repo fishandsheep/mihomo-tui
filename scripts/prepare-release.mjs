@@ -22,7 +22,7 @@ updateJSON(path.join(repoRoot, "package.json"), (pkg) => {
 
 updateJSON(path.join(repoRoot, "packages", "mihomo-tui", "package.json"), (pkg) => {
   pkg.version = version;
-  pkg.dependencies["@metacubex/mihomo-tui"] = version;
+  pkg.dependencies["@qinshower/mihomo-tui"] = version;
 });
 
 updateJSON(path.join(repoRoot, "packages", "cli", "package.json"), (pkg) => {

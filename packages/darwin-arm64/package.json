@@ -1,5 +1,5 @@
 {
-  "name": "@metacubex/mihomo-tui-darwin-arm64",
+  "name": "@qinshower/mihomo-tui-darwin-arm64",
   "version": "0.0.0-dev",
   "description": "mihomo-tui binary for darwin arm64.",
   "type": "module",

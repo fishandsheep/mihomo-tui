@@ -28,17 +28,17 @@ function detectLinuxLibc() {
 function resolvePlatformPackageName() {
   switch (`${process.platform}:${process.arch}`) {
     case "darwin:arm64":
-      return "@metacubex/mihomo-tui-darwin-arm64";
+      return "@qinshower/mihomo-tui-darwin-arm64";
     case "darwin:x64":
-      return "@metacubex/mihomo-tui-darwin-x64";
+      return "@qinshower/mihomo-tui-darwin-x64";
     case "linux:arm64":
-      return detectLinuxLibc() === "gnu" ? "@metacubex/mihomo-tui-linux-arm64-gnu" : null;
+      return detectLinuxLibc() === "gnu" ? "@qinshower/mihomo-tui-linux-arm64-gnu" : null;
     case "linux:x64":
-      return detectLinuxLibc() === "gnu" ? "@metacubex/mihomo-tui-linux-x64-gnu" : null;
+      return detectLinuxLibc() === "gnu" ? "@qinshower/mihomo-tui-linux-x64-gnu" : null;
     case "win32:arm64":
-      return "@metacubex/mihomo-tui-win32-arm64-msvc";
+      return "@qinshower/mihomo-tui-win32-arm64-msvc";
     case "win32:x64":
-      return "@metacubex/mihomo-tui-win32-x64-msvc";
+      return "@qinshower/mihomo-tui-win32-x64-msvc";
     default:
       return null;
   }

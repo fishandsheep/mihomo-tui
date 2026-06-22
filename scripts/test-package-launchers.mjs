@@ -87,7 +87,7 @@ const cliTarball = execFileSync("npm", ["pack"], {
 const aliasManifestPath = path.join(stagedAliasDir, "package.json");
 const aliasManifest = JSON.parse(fs.readFileSync(aliasManifestPath, "utf8"));
 aliasManifest.dependencies = {
-  "@metacubex/mihomo-tui": `file:${path.join(stagedCliDir, cliTarball)}`
+  "@qinshower/mihomo-tui": `file:${path.join(stagedCliDir, cliTarball)}`
 };
 writeJSON(aliasManifestPath, aliasManifest);
 const aliasTarball = execFileSync("npm", ["pack"], {
@@ -101,11 +101,11 @@ execFileSync("npm", ["install", path.join(stagedAliasDir, aliasTarball)], {
 });
 
 const installedBin = path.join(installRoot, "node_modules", ".bin", process.platform === "win32" ? "mihomo-tui.cmd" : "mihomo-tui");
-const launcherBin = path.join(installRoot, "node_modules", "@metacubex", "mihomo-tui", "bin.js");
+const launcherBin = path.join(installRoot, "node_modules", "@qinshower", "mihomo-tui", "bin.js");
 const platformInstallDir = path.join(
   installRoot,
   "node_modules",
-  "@metacubex",
+  "@qinshower",
   hostPlatform.packageName.split("/")[1]
 );
 if (!fs.existsSync(installedBin)) {

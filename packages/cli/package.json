@@ -1,5 +1,5 @@
 {
-  "name": "@metacubex/mihomo-tui",
+  "name": "@qinshower/mihomo-tui",
   "version": "0.0.0-dev",
   "description": "Standalone terminal UI for Clash/Mihomo-compatible external-controller APIs.",
   "type": "module",
@@ -12,12 +12,12 @@
     "index.js"
   ],
   "optionalDependencies": {
-    "@metacubex/mihomo-tui-darwin-arm64": "0.0.0-dev",
-    "@metacubex/mihomo-tui-darwin-x64": "0.0.0-dev",
-    "@metacubex/mihomo-tui-linux-arm64-gnu": "0.0.0-dev",
-    "@metacubex/mihomo-tui-linux-x64-gnu": "0.0.0-dev",
-    "@metacubex/mihomo-tui-win32-arm64-msvc": "0.0.0-dev",
-    "@metacubex/mihomo-tui-win32-x64-msvc": "0.0.0-dev"
+    "@qinshower/mihomo-tui-darwin-arm64": "0.0.0-dev",
+    "@qinshower/mihomo-tui-darwin-x64": "0.0.0-dev",
+    "@qinshower/mihomo-tui-linux-arm64-gnu": "0.0.0-dev",
+    "@qinshower/mihomo-tui-linux-x64-gnu": "0.0.0-dev",
+    "@qinshower/mihomo-tui-win32-arm64-msvc": "0.0.0-dev",
+    "@qinshower/mihomo-tui-win32-x64-msvc": "0.0.0-dev"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
