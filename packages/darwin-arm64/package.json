@@ -1,0 +1,26 @@
+{
+  "name": "@metacubex/mihomo-tui-darwin-arm64",
+  "version": "0.0.0-dev",
+  "description": "mihomo-tui binary for darwin arm64.",
+  "type": "module",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "bin/mihomo-tui",
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/mihomo-tui.git",
+    "directory": "packages/darwin-arm64"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "mihomo-tui",
+  "version": "0.0.0-dev",
+  "description": "Alias package for @metacubex/mihomo-tui.",
+  "type": "module",
+  "main": "./index.js",
+  "bin": {
+    "mihomo-tui": "./bin.js"
+  },
+  "files": [
+    "bin.js",
+    "index.js"
+  ],
+  "dependencies": {
+    "@metacubex/mihomo-tui": "0.0.0-dev"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/mihomo-tui.git",
+    "directory": "packages/mihomo-tui"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mihomo",
+    "clash",
+    "tui",
+    "cli"
+  ]
+}

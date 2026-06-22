@@ -1,0 +1,29 @@
+{
+  "name": "@metacubex/mihomo-tui-linux-x64-gnu",
+  "version": "0.0.0-dev",
+  "description": "mihomo-tui binary for linux x64 gnu.",
+  "type": "module",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "bin/mihomo-tui",
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/mihomo-tui.git",
+    "directory": "packages/linux-x64-gnu"
+  },
+  "license": "MIT"
+}

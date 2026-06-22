@@ -34,12 +34,21 @@
 go build -o ./bin/mihomo-tui ./cmd/tui
 ```
 
+Package distribution:
+
+```bash
+npx mihomo-tui@latest --version
+bunx mihomo-tui@latest --version
+```
+
 ## Run
 
 Direct controller:
 
 ```bash
 ./bin/mihomo-tui open --controller http://127.0.0.1:9090 --secret your-secret
+npx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
+bunx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
 ```
 
 Saved profile:
@@ -54,3 +63,34 @@ Saved profile:
 ```bash
 go test ./...
 ```
+
+## Release
+
+Prepare version metadata across npm workspace packages:
+
+```bash
+bun run prepare:release v0.3.0-beta.1
+```
+
+Build release payloads and smoke test package launchers:
+
+```bash
+bun run build:binaries --version v0.3.0-beta.1
+bun run build:packages
+bun run test:launchers
+```
+
+Publish all npm packages with dist-tag derived from version:
+
+```bash
+bun run publish:packages --version v0.3.0-beta.1
+```
+
+Override tag or dry-run when needed:
+
+```bash
+bun run publish:packages --version v0.3.0-rc.1 --tag next
+bun run publish:packages --version v0.3.0-beta.1 --dry-run
+```
+
+GitHub Actions `release` workflow runs on `v*` tags and also supports manual dispatch.

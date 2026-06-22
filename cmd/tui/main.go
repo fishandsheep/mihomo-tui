@@ -13,6 +13,8 @@ import (
 	"github.com/metacubex/mihomo-tui/internal/profile"
 )
 
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -30,6 +32,9 @@ func run(args []string) error {
 		return openCommand(args[1:])
 	case "profile":
 		return profileCommand(args[1:])
+	case "-v", "--version", "version":
+		printVersion()
+		return nil
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -40,12 +45,17 @@ func run(args []string) error {
 
 func printUsage() {
 	fmt.Println(`Usage:
-  tui open --profile <name>
-  tui open --controller http://127.0.0.1:9090 --secret xxx
-  tui profile add --name <name> --controller <url> [--secret xxx] [--tls-skip-verify] [--default]
-  tui profile edit --name <name> [--controller <url>] [--secret xxx] [--tls-skip-verify=true|false] [--default=true|false]
-  tui profile remove --name <name>
-  tui profile list`)
+  mihomo-tui open --profile <name>
+  mihomo-tui open --controller http://127.0.0.1:9090 --secret xxx
+  mihomo-tui profile add --name <name> --controller <url> [--secret xxx] [--tls-skip-verify] [--default]
+  mihomo-tui profile edit --name <name> [--controller <url>] [--secret xxx] [--tls-skip-verify=true|false] [--default=true|false]
+  mihomo-tui profile remove --name <name>
+  mihomo-tui profile list
+  mihomo-tui version`)
+}
+
+func printVersion() {
+	fmt.Printf("mihomo-tui %s\n", version)
 }
 
 func openCommand(args []string) error {

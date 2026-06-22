@@ -1,0 +1,26 @@
+{
+  "name": "@metacubex/mihomo-tui-win32-x64-msvc",
+  "version": "0.0.0-dev",
+  "description": "mihomo-tui binary for win32 x64 msvc.",
+  "type": "module",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "bin/mihomo-tui.exe",
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/mihomo-tui.git",
+    "directory": "packages/win32-x64-msvc"
+  },
+  "license": "MIT"
+}
