@@ -1,0 +1,75 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "mihomo-tui-workspace",
+    },
+    "packages/cli": {
+      "name": "@metacubex/mihomo-tui",
+      "version": "0.0.0-dev",
+      "bin": {
+        "mihomo-tui": "./bin.js",
+      },
+      "optionalDependencies": {
+        "@metacubex/mihomo-tui-darwin-arm64": "0.0.0-dev",
+        "@metacubex/mihomo-tui-darwin-x64": "0.0.0-dev",
+        "@metacubex/mihomo-tui-linux-arm64-gnu": "0.0.0-dev",
+        "@metacubex/mihomo-tui-linux-x64-gnu": "0.0.0-dev",
+        "@metacubex/mihomo-tui-win32-arm64-msvc": "0.0.0-dev",
+        "@metacubex/mihomo-tui-win32-x64-msvc": "0.0.0-dev",
+      },
+    },
+    "packages/darwin-arm64": {
+      "name": "@metacubex/mihomo-tui-darwin-arm64",
+      "version": "0.0.0-dev",
+    },
+    "packages/darwin-x64": {
+      "name": "@metacubex/mihomo-tui-darwin-x64",
+      "version": "0.0.0-dev",
+    },
+    "packages/linux-arm64-gnu": {
+      "name": "@metacubex/mihomo-tui-linux-arm64-gnu",
+      "version": "0.0.0-dev",
+    },
+    "packages/linux-x64-gnu": {
+      "name": "@metacubex/mihomo-tui-linux-x64-gnu",
+      "version": "0.0.0-dev",
+    },
+    "packages/mihomo-tui": {
+      "name": "mihomo-tui",
+      "version": "0.0.0-dev",
+      "bin": {
+        "mihomo-tui": "./bin.js",
+      },
+      "dependencies": {
+        "@metacubex/mihomo-tui": "0.0.0-dev",
+      },
+    },
+    "packages/win32-arm64-msvc": {
+      "name": "@metacubex/mihomo-tui-win32-arm64-msvc",
+      "version": "0.0.0-dev",
+    },
+    "packages/win32-x64-msvc": {
+      "name": "@metacubex/mihomo-tui-win32-x64-msvc",
+      "version": "0.0.0-dev",
+    },
+  },
+  "packages": {
+    "@metacubex/mihomo-tui": ["@metacubex/mihomo-tui@workspace:packages/cli"],
+
+    "@metacubex/mihomo-tui-darwin-arm64": ["@metacubex/mihomo-tui-darwin-arm64@workspace:packages/darwin-arm64"],
+
+    "@metacubex/mihomo-tui-darwin-x64": ["@metacubex/mihomo-tui-darwin-x64@workspace:packages/darwin-x64"],
+
+    "@metacubex/mihomo-tui-linux-arm64-gnu": ["@metacubex/mihomo-tui-linux-arm64-gnu@workspace:packages/linux-arm64-gnu"],
+
+    "@metacubex/mihomo-tui-linux-x64-gnu": ["@metacubex/mihomo-tui-linux-x64-gnu@workspace:packages/linux-x64-gnu"],
+
+    "@metacubex/mihomo-tui-win32-arm64-msvc": ["@metacubex/mihomo-tui-win32-arm64-msvc@workspace:packages/win32-arm64-msvc"],
+
+    "@metacubex/mihomo-tui-win32-x64-msvc": ["@metacubex/mihomo-tui-win32-x64-msvc@workspace:packages/win32-x64-msvc"],
+
+    "mihomo-tui": ["mihomo-tui@workspace:packages/mihomo-tui"],
+  }
+}

@@ -1,0 +1,101 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without leading v, for example 0.3.0-beta.1
+        required: true
+      dist_tag:
+        description: Optional npm dist-tag override
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_CONFIG_PROVENANCE: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ -n "${{ inputs.dist_tag }}" ]]; then
+            DIST_TAG="${{ inputs.dist_tag }}"
+          elif [[ "${VERSION}" == *-* ]]; then
+            DIST_TAG="${VERSION#*-}"
+            DIST_TAG="${DIST_TAG%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+          if [[ "${DIST_TAG}" == "latest" ]]; then
+            PRERELEASE="false"
+          else
+            PRERELEASE="true"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "dist_tag=${DIST_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install workspace metadata
+        run: bun install
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Prepare release version
+        run: bun run prepare:release "${{ steps.release.outputs.version }}"
+
+      - name: Build release binaries
+        run: bun run build:binaries --version "${{ steps.release.outputs.version }}"
+
+      - name: Stage package payloads
+        run: bun run build:packages
+
+      - name: Smoke test launchers
+        run: bun run test:launchers
+
+      - name: Build archives
+        run: |
+          mkdir -p dist/release
+          tar -C dist/npm/darwin-arm64 -czf dist/release/mihomo-tui-darwin-arm64.tar.gz mihomo-tui
+          tar -C dist/npm/darwin-x64 -czf dist/release/mihomo-tui-darwin-x64.tar.gz mihomo-tui
+          tar -C dist/npm/linux-arm64-gnu -czf dist/release/mihomo-tui-linux-arm64-gnu.tar.gz mihomo-tui
+          tar -C dist/npm/linux-x64-gnu -czf dist/release/mihomo-tui-linux-x64-gnu.tar.gz mihomo-tui
+          zip -j dist/release/mihomo-tui-win32-arm64-msvc.zip dist/npm/win32-arm64-msvc/mihomo-tui.exe
+          zip -j dist/release/mihomo-tui-win32-x64-msvc.zip dist/npm/win32-x64-msvc/mihomo-tui.exe
+
+      - name: Publish npm packages
+        run: bun run publish:packages --version "${{ steps.release.outputs.version }}" --tag "${{ steps.release.outputs.dist_tag }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+          tag_name: v${{ steps.release.outputs.version }}
+          prerelease: ${{ steps.release.outputs.prerelease }}
