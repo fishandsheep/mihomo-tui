@@ -16,9 +16,20 @@ const (
 type Profile struct {
 	Name          string `json:"name"`
 	ControllerURL string `json:"controller_url"`
+	UnixSocket    string `json:"unix_socket,omitempty"`
 	Secret        string `json:"secret"`
 	TLSSkipVerify bool   `json:"tls_skip_verify"`
 	Default       bool   `json:"default,omitempty"`
+}
+
+func (p Profile) Target() string {
+	if p.ControllerURL != "" {
+		return p.ControllerURL
+	}
+	if p.UnixSocket != "" {
+		return "unix://" + p.UnixSocket
+	}
+	return ""
 }
 
 type fileState struct {
@@ -89,8 +100,11 @@ func (s *Store) Upsert(p Profile) error {
 	if p.Name == "" {
 		return errors.New("profile name required")
 	}
-	if p.ControllerURL == "" {
-		return errors.New("controller URL required")
+	if p.ControllerURL == "" && p.UnixSocket == "" {
+		return errors.New("controller URL or unix socket required")
+	}
+	if p.ControllerURL != "" && p.UnixSocket != "" {
+		return errors.New("controller URL and unix socket are mutually exclusive")
 	}
 
 	found := false

@@ -176,7 +176,7 @@ func TestEnterDoesNothingAndSpaceSwitchesNode(t *testing.T) {
 	if len(svc.switchCalls) != 1 {
 		t.Fatalf("expected switch call")
 	}
-	if svc.switchCalls[0] != [2]string{"Auto", "NodeB"} {
+	if svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
 		t.Fatalf("unexpected switch call: %#v", svc.switchCalls[0])
 	}
 }
@@ -322,18 +322,20 @@ func TestMouseWheelScrollsHoveredPane(t *testing.T) {
 	t.Parallel()
 
 	model := newTestModel(&fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}})
-	model.snapshot.Groups = makeManyGroups(40)
+	model.snapshot.Groups = []compat.ProxyGroup{{Name: "Halsh Cloud", Type: "selector", Now: "Node00", Options: manyNodes(120), TestURL: compat.DefaultTestURL}}
+	model.snapshot.Config.Mode = "rule"
 	model.groupCursor = 0
+	model.activePane = PaneNodes
 	model.ensureOffsets()
 
 	layout := view.ComputeLayout(model.renderState())
-	next, _ := model.Update(mouseWheel(layout.Groups.X+2, layout.Groups.Y+2, tea.MouseButtonWheelDown))
+	next, _ := model.Update(mouseWheel(layout.Nodes.X+2, layout.Nodes.Y+2, tea.MouseButtonWheelDown))
 	model = next.(Model)
-	if model.groupOffset == 0 {
-		t.Fatalf("expected group offset to change")
+	if model.nodeOffset == 0 {
+		t.Fatalf("expected node offset to change")
 	}
-	if model.nodeOffset != 0 || model.sessionOffset != 0 || model.modeOffset != 0 {
-		t.Fatalf("unexpected other offsets: sessions=%d modes=%d nodes=%d", model.sessionOffset, model.modeOffset, model.nodeOffset)
+	if model.groupOffset != 0 || model.sessionOffset != 0 || model.modeOffset != 0 {
+		t.Fatalf("unexpected other offsets: sessions=%d modes=%d groups=%d", model.sessionOffset, model.modeOffset, model.groupOffset)
 	}
 }
 
@@ -341,19 +343,20 @@ func TestKeyboardCursorMovementAutoScrollsLists(t *testing.T) {
 	t.Parallel()
 
 	model := newTestModel(&fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}})
-	model.snapshot.Groups = makeManyGroups(40)
-	model.activePane = PaneGroups
+	model.snapshot.Groups = []compat.ProxyGroup{{Name: "Halsh Cloud", Type: "selector", Now: "Node00", Options: manyNodes(120), TestURL: compat.DefaultTestURL}}
+	model.snapshot.Config.Mode = "rule"
+	model.activePane = PaneNodes
 	model.ensureOffsets()
 
-	for i := 0; i < 35; i++ {
+	for i := 0; i < 70; i++ {
 		next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
 		model = next.(Model)
 	}
-	if model.groupCursor != 35 {
-		t.Fatalf("expected cursor 35, got %d", model.groupCursor)
+	if model.nodeCursor != 70 {
+		t.Fatalf("expected cursor 70, got %d", model.nodeCursor)
 	}
-	if model.groupOffset == 0 {
-		t.Fatalf("expected group offset to auto-scroll")
+	if model.nodeOffset == 0 {
+		t.Fatalf("expected node offset to auto-scroll")
 	}
 }
 
@@ -386,17 +389,19 @@ func TestVisibleGroupsFollowMode(t *testing.T) {
 
 	model := newTestModel(&fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}})
 	model.snapshot.Groups = []compat.ProxyGroup{
+		{Name: "Halsh Cloud", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}},
 		{Name: "Auto", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}},
 		{Name: "GLOBAL", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}},
 	}
 
 	model.snapshot.Config.Mode = "rule"
-	if got := len(model.visibleGroups()); got != 2 {
-		t.Fatalf("rule mode should show all groups, got %d", got)
+	groups := model.visibleGroups()
+	if len(groups) != 1 || groups[0].Name != "Halsh Cloud" {
+		t.Fatalf("rule mode should show only Halsh Cloud, got %#v", groups)
 	}
 
 	model.snapshot.Config.Mode = "global"
-	groups := model.visibleGroups()
+	groups = model.visibleGroups()
 	if len(groups) != 1 || groups[0].Name != "GLOBAL" {
 		t.Fatalf("global mode should show only GLOBAL, got %#v", groups)
 	}
@@ -404,6 +409,36 @@ func TestVisibleGroupsFollowMode(t *testing.T) {
 	model.snapshot.Config.Mode = "direct"
 	if got := len(model.visibleGroups()); got != 0 {
 		t.Fatalf("direct mode should hide groups, got %d", got)
+	}
+}
+
+func TestGroupSelectionPersistsPerMode(t *testing.T) {
+	t.Parallel()
+
+	model := newTestModel(&fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}})
+	model.snapshot.Groups = []compat.ProxyGroup{
+		{Name: "Halsh Cloud", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}},
+		{Name: "GLOBAL", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}},
+	}
+	model.snapshot.Config.Mode = "global"
+	model.syncCursors()
+	if got := model.currentGroup().Name; got != "GLOBAL" {
+		t.Fatalf("expected global group selected, got %q", got)
+	}
+
+	model.snapshot.Config.Mode = "rule"
+	model.syncCursors()
+	if got := model.currentGroup().Name; got != "Halsh Cloud" {
+		t.Fatalf("expected rule group selected, got %q", got)
+	}
+
+	model.preferredGroupByMode["rule"] = "Halsh Cloud"
+	model.preferredGroupByMode["global"] = "GLOBAL"
+	model.snapshot.Config.Mode = "global"
+	model.groupCursor = 0
+	model.syncCursors()
+	if got := model.currentGroup().Name; got != "GLOBAL" {
+		t.Fatalf("expected remembered global group, got %q", got)
 	}
 }
 
@@ -444,7 +479,7 @@ func fixtureSnapshot() compat.Snapshot {
 			"NodeB": {Name: "NodeB", Alive: true, History: []compat.DelayHistory{{Delay: 20}}},
 		},
 		Groups: []compat.ProxyGroup{
-			{Name: "Auto", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}, TestURL: compat.DefaultTestURL},
+			{Name: "Halsh Cloud", Type: "selector", Now: "NodeA", Options: []string{"NodeA", "NodeB"}, TestURL: compat.DefaultTestURL},
 		},
 	}
 }
@@ -455,6 +490,14 @@ func mouseClick(x, y int) tea.MouseMsg {
 
 func mouseWheel(x, y int, button tea.MouseButton) tea.MouseMsg {
 	return tea.MouseMsg{X: x, Y: y, Button: button, Action: tea.MouseActionPress}
+}
+
+func manyNodes(n int) []string {
+	nodes := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		nodes = append(nodes, fmt.Sprintf("Node%02d", i))
+	}
+	return nodes
 }
 
 func makeManyGroups(n int) []compat.ProxyGroup {

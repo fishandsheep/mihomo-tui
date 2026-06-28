@@ -49,14 +49,21 @@ type DelayResult struct {
 	Delay int `json:"delay"`
 }
 
-func New(baseURL, secret string, tlsSkipVerify bool) *Client {
+func New(baseURL, unixSocket, secret string, tlsSkipVerify bool) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if strings.HasPrefix(baseURL, "https://") {
+	resolvedBaseURL := strings.TrimRight(baseURL, "/")
+	if unixSocket != "" {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", unixSocket)
+		}
+		resolvedBaseURL = "http://unix"
+	} else if strings.HasPrefix(baseURL, "https://") {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: tlsSkipVerify} //nolint:gosec
 	}
 
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: resolvedBaseURL,
 		secret:  secret,
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,

@@ -47,8 +47,9 @@ func printUsage() {
 	fmt.Println(`Usage:
   mihomo-tui open --profile <name>
   mihomo-tui open --controller http://127.0.0.1:9090 --secret xxx
-  mihomo-tui profile add --name <name> --controller <url> [--secret xxx] [--tls-skip-verify] [--default]
-  mihomo-tui profile edit --name <name> [--controller <url>] [--secret xxx] [--tls-skip-verify=true|false] [--default=true|false]
+  mihomo-tui open --unix-socket /tmp/verge/verge-mihomo.sock --secret xxx
+  mihomo-tui profile add --name <name> (--controller <url> | --unix-socket <path>) [--secret xxx] [--tls-skip-verify] [--default]
+  mihomo-tui profile edit --name <name> [--controller <url> | --unix-socket <path>] [--secret xxx] [--tls-skip-verify=true|false] [--default=true|false]
   mihomo-tui profile remove --name <name>
   mihomo-tui profile list
   mihomo-tui version`)
@@ -64,6 +65,7 @@ func openCommand(args []string) error {
 
 	profileName := fs.String("profile", "", "profile name")
 	controllerURL := fs.String("controller", "", "controller URL")
+	unixSocket := fs.String("unix-socket", "", "controller unix socket path")
 	secret := fs.String("secret", "", "controller secret")
 	tlsSkipVerify := fs.Bool("tls-skip-verify", false, "skip TLS verification")
 	if err := fs.Parse(args); err != nil {
@@ -75,6 +77,10 @@ func openCommand(args []string) error {
 		return err
 	}
 
+	if *controllerURL != "" && *unixSocket != "" {
+		return errors.New("--controller and --unix-socket are mutually exclusive")
+	}
+
 	var selected profile.Profile
 	switch {
 	case *profileName != "":
@@ -83,17 +89,18 @@ func openCommand(args []string) error {
 			return fmt.Errorf("profile %q not found", *profileName)
 		}
 		selected = p
-	case *controllerURL != "":
+	case *controllerURL != "" || *unixSocket != "":
 		selected = profile.Profile{
 			Name:          "direct",
 			ControllerURL: *controllerURL,
+			UnixSocket:    *unixSocket,
 			Secret:        *secret,
 			TLSSkipVerify: *tlsSkipVerify,
 		}
 	default:
 		p, ok := store.Default()
 		if !ok {
-			return errors.New("no profile selected; pass --profile or --controller")
+			return errors.New("no profile selected; pass --profile, --controller, or --unix-socket")
 		}
 		selected = p
 	}
@@ -138,6 +145,7 @@ func profileAdd(store *profile.Store, args []string) error {
 
 	name := fs.String("name", "", "profile name")
 	controllerURL := fs.String("controller", "", "controller URL")
+	unixSocket := fs.String("unix-socket", "", "controller unix socket path")
 	secret := fs.String("secret", "", "controller secret")
 	tlsSkipVerify := fs.Bool("tls-skip-verify", false, "skip TLS verification")
 	setDefault := fs.Bool("default", false, "set default profile")
@@ -145,13 +153,17 @@ func profileAdd(store *profile.Store, args []string) error {
 		return err
 	}
 
-	if *name == "" || *controllerURL == "" {
-		return errors.New("--name and --controller required")
+	if *controllerURL != "" && *unixSocket != "" {
+		return errors.New("--controller and --unix-socket are mutually exclusive")
+	}
+	if *name == "" || (*controllerURL == "" && *unixSocket == "") {
+		return errors.New("--name and one of --controller or --unix-socket required")
 	}
 
 	return store.Upsert(profile.Profile{
 		Name:          *name,
 		ControllerURL: *controllerURL,
+		UnixSocket:    *unixSocket,
 		Secret:        *secret,
 		TLSSkipVerify: *tlsSkipVerify,
 		Default:       *setDefault,
@@ -164,6 +176,7 @@ func profileEdit(store *profile.Store, args []string) error {
 
 	name := fs.String("name", "", "profile name")
 	controllerURL := fs.String("controller", "", "controller URL")
+	unixSocket := fs.String("unix-socket", "", "controller unix socket path")
 	secret := fs.String("secret", "", "controller secret")
 	tlsSkipVerify := fs.String("tls-skip-verify", "", "skip TLS verification")
 	defaultFlag := fs.String("default", "", "set default profile")
@@ -174,6 +187,9 @@ func profileEdit(store *profile.Store, args []string) error {
 	if *name == "" {
 		return errors.New("--name required")
 	}
+	if *controllerURL != "" && *unixSocket != "" {
+		return errors.New("--controller and --unix-socket are mutually exclusive")
+	}
 
 	current, ok := store.Get(*name)
 	if !ok {
@@ -182,6 +198,11 @@ func profileEdit(store *profile.Store, args []string) error {
 
 	if *controllerURL != "" {
 		current.ControllerURL = *controllerURL
+		current.UnixSocket = ""
+	}
+	if *unixSocket != "" {
+		current.UnixSocket = *unixSocket
+		current.ControllerURL = ""
 	}
 	if *secret != "" || hasFlag(args, "--secret") {
 		current.Secret = *secret

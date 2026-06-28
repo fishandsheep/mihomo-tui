@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const DefaultTestURL = "https://www.gstatic.com/generate_204"
+const DefaultTestURL = "http://cp.cloudflare.com"
 
 var selectableTypes = map[string]bool{
 	"selector": true,

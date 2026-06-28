@@ -156,8 +156,8 @@ func newMockController(name string) *mockController {
 		case r.Method == http.MethodGet && r.URL.Path == "/proxies":
 			json.NewEncoder(w).Encode(map[string]any{
 				"proxies": map[string]any{
-					"Auto": map[string]any{
-						"name":    "Auto",
+					"Halsh Cloud": map[string]any{
+						"name":    "Halsh Cloud",
 						"type":    "Selector",
 						"now":     state.groupNow,
 						"all":     []string{"NodeA", "NodeB"},
@@ -178,19 +178,19 @@ func newMockController(name string) *mockController {
 					},
 				},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/proxies/Auto":
+		case r.Method == http.MethodGet && r.URL.Path == "/proxies/Halsh Cloud":
 			json.NewEncoder(w).Encode(map[string]any{
-				"name": "Auto",
+				"name": "Halsh Cloud",
 				"type": "Selector",
 				"now":  state.groupNow,
 				"all":  []string{"NodeA", "NodeB"},
 			})
-		case r.Method == http.MethodPut && r.URL.Path == "/proxies/Auto":
+		case r.Method == http.MethodPut && r.URL.Path == "/proxies/Halsh Cloud":
 			var body map[string]string
 			json.NewDecoder(r.Body).Decode(&body)
 			state.groupNow = body["name"]
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == "/proxies/Auto/delay":
+		case r.Method == http.MethodGet && r.URL.Path == "/proxies/Halsh Cloud/delay":
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"message": "Body invalid"})
 		case r.Method == http.MethodGet && r.URL.Path == "/proxies/NodeB/delay":
@@ -219,8 +219,8 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 		case "/proxies":
 			json.NewEncoder(w).Encode(map[string]any{
 				"proxies": map[string]any{
-					"Auto": map[string]any{
-						"name": "Auto",
+					"Halsh Cloud": map[string]any{
+						"name": "Halsh Cloud",
 						"type": "Selector",
 						"now":  "NodeA",
 						"all":  []string{"NodeA"},

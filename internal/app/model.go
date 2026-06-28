@@ -98,14 +98,15 @@ type Model struct {
 	screenModeIndex int
 	manualScreen    bool
 
-	snapshot      compat.Snapshot
-	capabilities  compat.Capabilities
-	connected     bool
-	toast         string
-	connectionErr string
-	events        []string
-	lastClick     clickState
-	now           func() time.Time
+	snapshot             compat.Snapshot
+	capabilities         compat.Capabilities
+	connected            bool
+	toast                string
+	connectionErr        string
+	events               []string
+	preferredGroupByMode map[string]string
+	lastClick            clickState
+	now                  func() time.Time
 }
 
 type snapshotLoadedMsg struct {
@@ -147,17 +148,18 @@ func NewModel(opts Options) Model {
 	active := resolveActiveProfile(opts, sessions)
 
 	model := Model{
-		store:            opts.Store,
-		svc:              svc,
-		sessions:         sessions,
-		activeProfile:    active,
-		activePane:       PaneGroups,
-		previousSidePane: PaneNodes,
-		activeMainTab:    MainTabInspector,
-		screenModeIndex:  len(view.ScreenModes) - 1,
-		now:              time.Now,
+		store:                opts.Store,
+		svc:                  svc,
+		sessions:             sessions,
+		activeProfile:        active,
+		activePane:           PaneGroups,
+		previousSidePane:     PaneNodes,
+		activeMainTab:        MainTabInspector,
+		screenModeIndex:      len(view.ScreenModes) - 1,
+		preferredGroupByMode: make(map[string]string, 2),
+		now:                  time.Now,
 	}
-	model.sessionCursor = model.indexSession(active.Name, active.ControllerURL)
+	model.sessionCursor = model.indexSession(active.Name, active.Target())
 	model.modeCursor = model.indexMode(compat.NormalizeConfig(map[string]any{"mode": "rule"}).Mode)
 	return model
 }
@@ -207,6 +209,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot.Config = msg.config
 		m.modeCursor = m.indexMode(msg.config.Mode)
+		m.restorePreferredGroup()
 		m.toast = "mode -> " + msg.config.Mode
 		m.pushEvent(m.toast)
 		m.ensureOffsets()
@@ -274,7 +277,7 @@ func (m Model) renderState() view.State {
 		MinWidth:       view.ScreenModes[0].Width,
 		MinHeight:      view.ScreenModes[0].Height,
 		Instance:       m.activeProfile.Name,
-		Controller:     m.activeProfile.ControllerURL,
+		Controller:     m.activeProfile.Target(),
 		Connected:      m.connected,
 		Mode:           m.snapshot.Config.Mode,
 		Version:        m.snapshot.Version.Core,
@@ -298,7 +301,7 @@ func (m Model) renderState() view.State {
 		GroupOffset:    m.groupOffset,
 		NodeOffset:     m.nodeOffset,
 		MainOffset:     m.mainOffset,
-		CurrentSession: m.indexSession(m.activeProfile.Name, m.activeProfile.ControllerURL),
+		CurrentSession: m.indexSession(m.activeProfile.Name, m.activeProfile.Target()),
 		CurrentMode:    m.indexMode(m.snapshot.Config.Mode),
 		CurrentNode:    selectedNodeIndex(group),
 		MainTabIndex:   int(m.activeMainTab),
@@ -479,8 +482,7 @@ func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case view.PaneGroups:
 		m.activePane = PaneGroups
 		if index, ok := view.ListIndexAt(layout.Groups, msg.X, msg.Y, len(m.visibleGroups()), m.groupOffset); ok {
-			m.groupCursor = index
-			m.nodeCursor = selectedNodeIndex(m.currentGroup())
+			m.setGroupCursor(index)
 			m.ensureOffsets()
 			if m.registerDoubleClick(PaneGroups, index) {
 				m.previousSidePane = PaneGroups
@@ -562,8 +564,7 @@ func (m *Model) moveCursor(step int) {
 	case PaneModes:
 		m.modeCursor = clampCursor(m.modeCursor+step, len(modeOptions))
 	case PaneGroups:
-		m.groupCursor = clampCursor(m.groupCursor+step, len(m.visibleGroups()))
-		m.nodeCursor = selectedNodeIndex(m.currentGroup())
+		m.setGroupCursor(clampCursor(m.groupCursor+step, len(m.visibleGroups())))
 	case PaneNodes:
 		m.nodeCursor = clampCursor(m.nodeCursor+step, len(m.currentGroup().Options))
 	case PaneMain:
@@ -585,8 +586,7 @@ func (m *Model) pageMove(direction int) {
 	case PaneModes:
 		m.modeCursor = clampCursor(m.modeCursor+(direction*max(1, view.ContentHeight(layout.Modes)-1)), len(modeOptions))
 	case PaneGroups:
-		m.groupCursor = clampCursor(m.groupCursor+(direction*max(1, view.ContentHeight(layout.Groups)-1)), len(m.visibleGroups()))
-		m.nodeCursor = selectedNodeIndex(m.currentGroup())
+		m.setGroupCursor(clampCursor(m.groupCursor+(direction*max(1, view.ContentHeight(layout.Groups)-1)), len(m.visibleGroups())))
 	case PaneNodes:
 		m.nodeCursor = clampCursor(m.nodeCursor+(direction*max(1, view.ContentHeight(layout.Nodes)-1)), len(m.currentGroup().Options))
 	case PaneMain:
@@ -604,8 +604,7 @@ func (m *Model) jumpToBoundary(last bool) {
 	case PaneModes:
 		m.modeCursor = boundaryIndex(len(modeOptions), last)
 	case PaneGroups:
-		m.groupCursor = boundaryIndex(len(m.visibleGroups()), last)
-		m.nodeCursor = selectedNodeIndex(m.currentGroup())
+		m.setGroupCursor(boundaryIndex(len(m.visibleGroups()), last))
 	case PaneNodes:
 		m.nodeCursor = boundaryIndex(len(m.currentGroup().Options), last)
 	case PaneMain:
@@ -619,9 +618,9 @@ func (m *Model) jumpToBoundary(last bool) {
 }
 
 func (m *Model) syncCursors() {
-	m.sessionCursor = m.indexSession(m.activeProfile.Name, m.activeProfile.ControllerURL)
+	m.sessionCursor = m.indexSession(m.activeProfile.Name, m.activeProfile.Target())
 	m.tunCursor = clampCursor(m.tunCursor, len(m.tunItems()))
-	m.groupCursor = clampCursor(m.groupCursor, len(m.visibleGroups()))
+	m.restorePreferredGroup()
 	m.nodeCursor = clampCursor(selectedNodeIndex(m.currentGroup()), len(m.currentGroup().Options))
 	m.ensureOffsets()
 }
@@ -722,17 +721,11 @@ func (m Model) currentSession() (sessionEntry, bool) {
 func (m Model) visibleGroups() []compat.ProxyGroup {
 	switch strings.ToLower(m.snapshot.Config.Mode) {
 	case "global":
-		out := make([]compat.ProxyGroup, 0, 1)
-		for _, group := range m.snapshot.Groups {
-			if strings.EqualFold(group.Name, "GLOBAL") {
-				out = append(out, group)
-			}
-		}
-		return out
+		return filterGroupsByName(m.snapshot.Groups, "GLOBAL")
 	case "direct":
 		return nil
 	default:
-		return m.snapshot.Groups
+		return filterGroupsByName(m.snapshot.Groups, "Halsh Cloud")
 	}
 }
 
@@ -742,6 +735,50 @@ func (m Model) currentGroup() compat.ProxyGroup {
 		return compat.ProxyGroup{}
 	}
 	return groups[m.groupCursor]
+}
+
+func filterGroupsByName(groups []compat.ProxyGroup, name string) []compat.ProxyGroup {
+	out := make([]compat.ProxyGroup, 0, 1)
+	for _, group := range groups {
+		if strings.EqualFold(group.Name, name) {
+			out = append(out, group)
+		}
+	}
+	return out
+}
+
+func (m *Model) setGroupCursor(index int) {
+	m.groupCursor = index
+	m.rememberCurrentGroup()
+	m.nodeCursor = selectedNodeIndex(m.currentGroup())
+}
+
+func (m *Model) rememberCurrentGroup() {
+	group := m.currentGroup()
+	mode := strings.ToLower(m.snapshot.Config.Mode)
+	if group.Name == "" || mode == "" {
+		return
+	}
+	m.preferredGroupByMode[mode] = group.Name
+}
+
+func (m *Model) restorePreferredGroup() {
+	groups := m.visibleGroups()
+	if len(groups) == 0 {
+		m.groupCursor = 0
+		return
+	}
+	mode := strings.ToLower(m.snapshot.Config.Mode)
+	if name := m.preferredGroupByMode[mode]; name != "" {
+		for i, group := range groups {
+			if strings.EqualFold(group.Name, name) {
+				m.groupCursor = i
+				return
+			}
+		}
+	}
+	m.groupCursor = clampCursor(m.groupCursor, len(groups))
+	m.rememberCurrentGroup()
 }
 
 func (m Model) selectedNode() string {
@@ -832,8 +869,8 @@ func (m Model) sessionItems() []view.Item {
 	for _, session := range m.sessions {
 		items = append(items, view.Item{
 			Primary:   session.Label,
-			Secondary: session.Profile.ControllerURL,
-			Current:   session.Profile.Name == m.activeProfile.Name && session.Profile.ControllerURL == m.activeProfile.ControllerURL,
+			Secondary: session.Profile.Target(),
+			Current:   sameProfileTarget(session.Profile, m.activeProfile),
 		})
 	}
 	return items
@@ -952,18 +989,22 @@ func (m Model) indexMode(mode string) int {
 	return 0
 }
 
-func (m Model) indexSession(name, controller string) int {
+func (m Model) indexSession(name, target string) int {
 	for i, item := range m.sessions {
-		if item.Profile.Name == name && item.Profile.ControllerURL == controller {
+		if item.Profile.Name == name && item.Profile.Target() == target {
 			return i
 		}
 	}
 	return 0
 }
 
+func sameProfileTarget(a, b profile.Profile) bool {
+	return a.Name == b.Name && a.Target() == b.Target()
+}
+
 func buildSessions(store *profile.Store, direct profile.Profile) []sessionEntry {
 	sessions := make([]sessionEntry, 0, 8)
-	if direct.ControllerURL != "" {
+	if direct.Target() != "" {
 		label := "Current Session"
 		if direct.Name != "" && direct.Name != "direct" {
 			label = direct.Name
@@ -974,7 +1015,7 @@ func buildSessions(store *profile.Store, direct profile.Profile) []sessionEntry 
 		return sessions
 	}
 	for _, item := range store.List() {
-		if direct.ControllerURL != "" && item.ControllerURL == direct.ControllerURL && item.Secret == direct.Secret {
+		if direct.Target() != "" && item.Target() == direct.Target() && item.Secret == direct.Secret {
 			continue
 		}
 		sessions = append(sessions, sessionEntry{Label: item.Name, Profile: item})
@@ -983,7 +1024,7 @@ func buildSessions(store *profile.Store, direct profile.Profile) []sessionEntry 
 }
 
 func resolveActiveProfile(opts Options, sessions []sessionEntry) profile.Profile {
-	if opts.DirectProfile.ControllerURL != "" {
+	if opts.DirectProfile.Target() != "" {
 		return opts.DirectProfile
 	}
 	if opts.InitialProfile != "" && opts.Store != nil {
@@ -1006,7 +1047,7 @@ func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps comp
 	lines := []string{
 		"Session",
 		"  name: " + valueOrDash(active.Name),
-		"  controller: " + valueOrDash(active.ControllerURL),
+		"  controller: " + valueOrDash(active.Target()),
 		"",
 		"Controller",
 		"  mode: " + valueOrDash(snapshot.Config.Mode),
@@ -1233,7 +1274,7 @@ func errorAs[T error](err error, target *T) bool {
 }
 
 func (controllerService) LoadSnapshot(ctx context.Context, p profile.Profile) (compat.Snapshot, compat.Capabilities, error) {
-	client := api.New(p.ControllerURL, p.Secret, p.TLSSkipVerify)
+	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 
 	versionRaw, err := client.GetVersion(ctx)
 	if err != nil {
@@ -1273,7 +1314,7 @@ func (controllerService) LoadSnapshot(ctx context.Context, p profile.Profile) (c
 }
 
 func (controllerService) SetMode(ctx context.Context, p profile.Profile, mode string) (compat.Config, error) {
-	client := api.New(p.ControllerURL, p.Secret, p.TLSSkipVerify)
+	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 	err := client.PatchMode(ctx, mode)
 	if apiErr, ok := err.(*api.Error); ok && apiErr.Kind == api.ErrMissingEndpoint {
 		err = client.PutMode(ctx, mode)
@@ -1289,7 +1330,7 @@ func (controllerService) SetMode(ctx context.Context, p profile.Profile, mode st
 }
 
 func (controllerService) SetTUN(ctx context.Context, p profile.Profile, enabled bool) (compat.Config, error) {
-	client := api.New(p.ControllerURL, p.Secret, p.TLSSkipVerify)
+	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 	if err := client.PatchTUN(ctx, enabled); err != nil {
 		return compat.Config{}, err
 	}
@@ -1304,7 +1345,7 @@ func (controllerService) SetTUN(ctx context.Context, p profile.Profile, enabled 
 }
 
 func (controllerService) SwitchProxy(ctx context.Context, p profile.Profile, group, node string) (compat.Proxy, error) {
-	client := api.New(p.ControllerURL, p.Secret, p.TLSSkipVerify)
+	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 	if err := client.UpdateProxy(ctx, group, node); err != nil {
 		return compat.Proxy{}, err
 	}
@@ -1316,6 +1357,6 @@ func (controllerService) SwitchProxy(ctx context.Context, p profile.Profile, gro
 }
 
 func (controllerService) RunDelay(ctx context.Context, p profile.Profile, name string) (api.DelayResult, error) {
-	client := api.New(p.ControllerURL, p.Secret, p.TLSSkipVerify)
+	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 	return client.GetDelay(ctx, name, compat.DefaultTestURL, 5*time.Second)
 }

@@ -8,7 +8,7 @@
 Requirements:
 
 - Mihomo or Clash-compatible controller already running
-- `external-controller` enabled, for example `http://127.0.0.1:9090`
+- `external-controller` enabled, for example `http://127.0.0.1:9090` or unix socket `/tmp/verge/verge-mihomo.sock`
 - controller `secret` available if authentication enabled
 - Node.js or Bun installed if you want to run from npm package
 
@@ -16,12 +16,14 @@ Run without installing:
 
 ```bash
 npx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
+npx mihomo-tui@latest open --unix-socket /tmp/verge/verge-mihomo.sock --secret your-secret
 ```
 
 Or with Bun:
 
 ```bash
 bunx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
+bunx mihomo-tui@latest open --unix-socket /tmp/verge/verge-mihomo.sock --secret your-secret
 ```
 
 Save controller as reusable profile:
@@ -51,6 +53,7 @@ If you prefer local binary:
 ```bash
 go build -o ./bin/mihomo-tui ./cmd/tui
 ./bin/mihomo-tui open --controller http://127.0.0.1:9090 --secret your-secret
+./bin/mihomo-tui open --unix-socket /tmp/verge/verge-mihomo.sock --secret your-secret
 ```
 
 ## Features
@@ -60,9 +63,10 @@ go build -o ./bin/mihomo-tui ./cmd/tui
 - independent TUN `on/off` toggle
 - proxy group browsing
 - node switching
-- delay testing
+- delay testing via `http://cp.cloudflare.com`
 - full-screen, resize-safe, lazygit-inspired terminal layout
 - mouse-aware panes with double-click apply
+- mode-aware group filtering: `rule` shows `Halsh Cloud`, `global` shows `GLOBAL`
 
 ## Interaction
 
@@ -97,6 +101,7 @@ Direct controller:
 
 ```bash
 ./bin/mihomo-tui open --controller http://127.0.0.1:9090 --secret your-secret
+./bin/mihomo-tui open --unix-socket /tmp/verge/verge-mihomo.sock --secret your-secret
 npx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
 bunx mihomo-tui@latest open --controller http://127.0.0.1:9090 --secret your-secret
 ```
@@ -105,7 +110,9 @@ Saved profile:
 
 ```bash
 ./bin/mihomo-tui profile add --name local --controller http://127.0.0.1:9090 --secret your-secret --default
+./bin/mihomo-tui profile add --name verge --unix-socket /tmp/verge/verge-mihomo.sock --secret your-secret
 ./bin/mihomo-tui open --profile local
+./bin/mihomo-tui open --profile verge
 ```
 
 ## Test
