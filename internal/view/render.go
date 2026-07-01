@@ -81,6 +81,7 @@ type State struct {
 	Version        string
 	Meta           string
 	DelaySupported bool
+	IPRefreshText  string
 
 	ActivePane   Pane
 	SessionItems []Item
@@ -254,6 +255,7 @@ func renderMainPane(title string, rect Rect, state State) []string {
 			fmt.Sprintf("session %s", empty(state.Instance)),
 			fmt.Sprintf("status %s", empty(state.ConnectionText)),
 			fmt.Sprintf("delay %s", yesNo(state.DelaySupported)),
+			fmt.Sprintf("ip %s", empty(state.IPRefreshText)),
 		),
 		renderMainInfoLine(innerWidth,
 			fmt.Sprintf("ctl %s", empty(state.Controller)),

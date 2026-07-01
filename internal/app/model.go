@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,9 +37,10 @@ const (
 )
 
 var (
-	refreshInterval = 5 * time.Second
-	modeOptions     = []string{"rule", "global", "direct"}
-	mainTabs        = []string{"Inspector", "Delay History", "Events"}
+	refreshInterval       = 5 * time.Second
+	ipInfoRefreshInterval = 60 * time.Second
+	modeOptions           = []string{"rule", "global", "direct"}
+	mainTabs              = []string{"Inspector", "Delay History", "Events"}
 )
 
 const doubleClickThreshold = 350 * time.Millisecond
@@ -54,6 +58,7 @@ type Service interface {
 	SetTUN(context.Context, profile.Profile, bool) (compat.Config, error)
 	SwitchProxy(context.Context, profile.Profile, string, string) (compat.Proxy, error)
 	RunDelay(context.Context, profile.Profile, string) (api.DelayResult, error)
+	LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, error)
 }
 
 type controllerService struct{}
@@ -103,6 +108,10 @@ type Model struct {
 	connected            bool
 	toast                string
 	connectionErr        string
+	ipInfo               api.IPInfo
+	ipInfoErr            string
+	ipInfoUpdatedAt      time.Time
+	ipInfoNextRefreshAt  time.Time
 	events               []string
 	preferredGroupByMode map[string]string
 	lastClick            clickState
@@ -136,7 +145,16 @@ type delayResultMsg struct {
 	err    error
 }
 
+type ipInfoLoadedMsg struct {
+	info api.IPInfo
+	err  error
+}
+
 type tickMsg time.Time
+
+type ipInfoTickMsg time.Time
+
+type clockTickMsg time.Time
 
 func NewModel(opts Options) Model {
 	svc := opts.Service
@@ -165,7 +183,7 @@ func NewModel(opts Options) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadSnapshotCmd(), tickCmd())
+	return tea.Batch(m.loadSnapshotCmd(), m.loadIPInfoCmd(), tickCmd(), ipInfoTickCmd(), clockTickCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -242,7 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = "group updated: " + name
 		m.pushEvent(m.toast)
 		m.ensureOffsets()
-		return m, m.loadSnapshotCmd()
+		return m, tea.Batch(m.loadSnapshotCmd(), m.loadIPInfoCmd())
 	case delayResultMsg:
 		if msg.err != nil {
 			text := delayText(msg.err)
@@ -253,8 +271,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = fmt.Sprintf("%s delay: %dms", msg.name, msg.result.Delay)
 		m.pushEvent(m.toast)
 		return m, nil
+	case ipInfoLoadedMsg:
+		if msg.err != nil {
+			m.ipInfoErr = statusMessage(msg.err)
+			m.toast = "ip info: " + m.ipInfoErr
+			m.pushEvent(m.toast)
+			return m, nil
+		}
+		m.ipInfo = msg.info
+		m.ipInfoErr = ""
+		m.ipInfoUpdatedAt = time.Now()
+		if m.now != nil {
+			m.ipInfoUpdatedAt = m.now()
+		}
+		m.ipInfoNextRefreshAt = m.ipInfoUpdatedAt.Add(ipInfoRefreshInterval)
+		m.ensureOffsets()
+		return m, nil
 	case tickMsg:
 		return m, tea.Batch(m.loadSnapshotCmd(), tickCmd())
+	case ipInfoTickMsg:
+		return m, tea.Batch(m.loadIPInfoCmd(), ipInfoTickCmd())
+	case clockTickMsg:
+		return m, clockTickCmd()
 	}
 	return m, nil
 }
@@ -284,6 +322,7 @@ func (m Model) renderState() view.State {
 		Meta:           m.snapshot.Version.Meta,
 		ConnectionText: m.connectionStatusText(),
 		DelaySupported: m.capabilities.Delay,
+		IPRefreshText:  m.ipInfoRefreshText(),
 		ActivePane:     view.Pane(m.activePane),
 		SessionItems:   m.sessionItems(),
 		TUNItems:       m.tunItems(),
@@ -334,7 +373,7 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		m.toast = "refreshing"
-		return m, m.loadSnapshotCmd()
+		return m, tea.Batch(m.loadSnapshotCmd(), m.loadIPInfoCmd())
 	case "+":
 		m.manualScreen = true
 		m.screenModeIndex = clampCursor(m.screenModeIndex+1, len(view.ScreenModes))
@@ -847,9 +886,30 @@ func (m Model) delayCmd(name string) tea.Cmd {
 	}
 }
 
+func (m Model) loadIPInfoCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		info, err := m.svc.LoadIPInfo(ctx, m.activeProfile)
+		return ipInfoLoadedMsg{info: info, err: err}
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+func ipInfoTickCmd() tea.Cmd {
+	return tea.Tick(ipInfoRefreshInterval, func(t time.Time) tea.Msg {
+		return ipInfoTickMsg(t)
+	})
+}
+
+func clockTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return clockTickMsg(t)
 	})
 }
 
@@ -928,9 +988,14 @@ func (m Model) nodeItems() []view.Item {
 			alive = "up"
 			secondaryColor = "2"
 		}
+		secondaryParts := make([]string, 0, 2)
+		if proxy.Now != "" {
+			secondaryParts = append(secondaryParts, "["+proxy.Now+"]")
+		}
+		secondaryParts = append(secondaryParts, fmt.Sprintf("[%s] %s", alive, delay))
 		items = append(items, view.Item{
 			Primary:        name,
-			Secondary:      fmt.Sprintf("[%s] %s", alive, delay),
+			Secondary:      strings.Join(secondaryParts, "  "),
 			Current:        name == group.Now,
 			SecondaryColor: secondaryColor,
 		})
@@ -941,7 +1006,7 @@ func (m Model) nodeItems() []view.Item {
 func (m Model) mainDetail(group compat.ProxyGroup, node string) string {
 	switch m.activeMainTab {
 	case MainTabInspector:
-		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.connectionErr)
+		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.connectionErr, m.ipInfo, m.ipInfoErr, m.ipInfoUpdatedAt, m.ipInfoRefreshText())
 	case MainTabDelay:
 		return delayHistoryDetail(m.snapshot, group, node)
 	case MainTabEvents:
@@ -955,7 +1020,7 @@ func (m Model) mainDetail(group compat.ProxyGroup, node string) string {
 }
 
 func (m Model) footerText() string {
-	return "tab cycle  j/k move  pgup/pgdn scroll  space apply  h/l tabs  d delay  r refresh  q quit"
+	return "tab cycle  j/k move  pgup/pgdn scroll  space apply  h/l tabs  d delay  r refresh  ip 60s  q quit"
 }
 
 func (m Model) currentScreenMode() (view.ScreenMode, bool) {
@@ -978,6 +1043,25 @@ func (m Model) connectionStatusText() string {
 		return m.connectionErr
 	}
 	return "disconnected"
+}
+
+func (m Model) ipInfoRefreshText() string {
+	if m.ipInfoNextRefreshAt.IsZero() {
+		return "-"
+	}
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	remaining := time.Until(m.ipInfoNextRefreshAt)
+	if m.now != nil {
+		remaining = m.ipInfoNextRefreshAt.Sub(now)
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	seconds := int((remaining + time.Second - 1) / time.Second)
+	return fmt.Sprintf("%ds", seconds)
 }
 
 func (m Model) indexMode(mode string) int {
@@ -1043,7 +1127,7 @@ func resolveActiveProfile(opts Options, sessions []sessionEntry) profile.Profile
 	return profile.Profile{Name: "no-session"}
 }
 
-func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node, connectionErr string) string {
+func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node, connectionErr string, ipInfo api.IPInfo, ipInfoErr string, ipInfoUpdatedAt time.Time, ipRefreshText string) string {
 	lines := []string{
 		"Session",
 		"  name: " + valueOrDash(active.Name),
@@ -1058,6 +1142,26 @@ func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps comp
 	}
 	if connectionErr != "" {
 		lines = append(lines, "  error: "+connectionErr)
+	}
+	lines = append(lines,
+		"",
+		"IP Info",
+		"  ip: "+valueOrDash(ipInfo.IP),
+		"  hostname: "+valueOrDash(ipInfo.Hostname),
+		"  city: "+valueOrDash(ipInfo.City),
+		"  region: "+valueOrDash(ipInfo.Region),
+		"  country: "+valueOrDash(ipInfo.Country),
+		"  loc: "+valueOrDash(ipInfo.Loc),
+		"  org: "+valueOrDash(ipInfo.Org),
+		"  postal: "+valueOrDash(ipInfo.Postal),
+		"  timezone: "+valueOrDash(ipInfo.Timezone),
+		"  anycast: "+boolWord(ipInfo.Anycast),
+		"  readme: "+valueOrDash(ipInfo.Readme),
+		"  updated: "+timeText(ipInfoUpdatedAt),
+		"  refresh in: "+valueOrDash(ipRefreshText),
+	)
+	if ipInfoErr != "" {
+		lines = append(lines, "  error: "+ipInfoErr)
 	}
 	lines = append(lines,
 		"",
@@ -1259,6 +1363,13 @@ func valueOrDash(value string) string {
 	return value
 }
 
+func timeText(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format("2006-01-02 15:04:05")
+}
+
 func errorAs[T error](err error, target *T) bool {
 	switch typed := any(target).(type) {
 	case **api.Error:
@@ -1359,4 +1470,34 @@ func (controllerService) SwitchProxy(ctx context.Context, p profile.Profile, gro
 func (controllerService) RunDelay(ctx context.Context, p profile.Profile, name string) (api.DelayResult, error) {
 	client := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify)
 	return client.GetDelay(ctx, name, compat.DefaultTestURL, 5*time.Second)
+}
+
+func (controllerService) LoadIPInfo(ctx context.Context, p profile.Profile) (api.IPInfo, error) {
+	configRaw, err := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify).GetConfigs(ctx)
+	if err != nil {
+		return api.GetIPInfo(ctx)
+	}
+	if endpoint := proxyEndpoint(p, compat.NormalizeConfig(configRaw)); endpoint != "" {
+		return api.FetchIPInfoViaHTTPProxy(ctx, api.IPInfoURL, endpoint)
+	}
+	return api.GetIPInfo(ctx)
+}
+
+func proxyEndpoint(p profile.Profile, config compat.Config) string {
+	port := config.MixedPort
+	if port == 0 {
+		port = config.Port
+	}
+	if port == 0 || p.ControllerURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(p.ControllerURL)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 }

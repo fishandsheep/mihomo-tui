@@ -154,6 +154,61 @@ func TestDelayRequestEncodesQuery(t *testing.T) {
 	}
 }
 
+func TestFetchIPInfoDecodesResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		json.NewEncoder(w).Encode(IPInfo{
+			IP:       "203.0.113.8",
+			Hostname: "example.net",
+			City:     "Tokyo",
+			Region:   "Tokyo",
+			Country:  "JP",
+			Loc:      "35.6895,139.6917",
+			Org:      "AS64500 Example",
+			Postal:   "100-0001",
+			Timezone: "Asia/Tokyo",
+			Anycast:  true,
+			Readme:   "https://ipinfo.io/missingauth",
+		})
+	}))
+	defer server.Close()
+
+	info, err := FetchIPInfo(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("FetchIPInfo failed: %v", err)
+	}
+	if info.IP != "203.0.113.8" || info.Country != "JP" || !info.Anycast {
+		t.Fatalf("unexpected ip info: %#v", info)
+	}
+}
+
+func TestFetchIPInfoViaHTTPProxy(t *testing.T) {
+	t.Parallel()
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if r.URL.String() != "http://ipinfo.test/json" {
+			t.Fatalf("unexpected proxy request URL: %s", r.URL.String())
+		}
+		json.NewEncoder(w).Encode(IPInfo{IP: "198.51.100.9", Country: "GB"})
+	}))
+	defer proxy.Close()
+
+	info, err := FetchIPInfoViaHTTPProxy(context.Background(), "http://ipinfo.test/json", proxy.URL)
+	if err != nil {
+		t.Fatalf("FetchIPInfoViaHTTPProxy failed: %v", err)
+	}
+	if info.IP != "198.51.100.9" || info.Country != "GB" {
+		t.Fatalf("unexpected proxied ip info: %#v", info)
+	}
+}
+
 func TestClientSupportsUnixSocket(t *testing.T) {
 	t.Parallel()
 

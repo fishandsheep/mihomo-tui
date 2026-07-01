@@ -49,6 +49,22 @@ type DelayResult struct {
 	Delay int `json:"delay"`
 }
 
+type IPInfo struct {
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname"`
+	City     string `json:"city"`
+	Region   string `json:"region"`
+	Country  string `json:"country"`
+	Loc      string `json:"loc"`
+	Org      string `json:"org"`
+	Postal   string `json:"postal"`
+	Timezone string `json:"timezone"`
+	Anycast  bool   `json:"anycast"`
+	Readme   string `json:"readme"`
+}
+
+const IPInfoURL = "https://ipinfo.io/json"
+
 func New(baseURL, unixSocket, secret string, tlsSkipVerify bool) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	resolvedBaseURL := strings.TrimRight(baseURL, "/")
@@ -127,6 +143,48 @@ func (c *Client) GetDelay(ctx context.Context, name, testURL string, timeout tim
 
 func (c *Client) ProbeDelayEndpoint(ctx context.Context, name string) error {
 	return c.doJSON(ctx, http.MethodGet, "/proxies/"+url.PathEscape(name)+"/delay", nil, nil)
+}
+
+func GetIPInfo(ctx context.Context) (IPInfo, error) {
+	return FetchIPInfo(ctx, IPInfoURL)
+}
+
+func FetchIPInfo(ctx context.Context, endpoint string) (IPInfo, error) {
+	return fetchIPInfo(ctx, endpoint, http.DefaultTransport.(*http.Transport).Clone())
+}
+
+func FetchIPInfoViaHTTPProxy(ctx context.Context, endpoint, proxyEndpoint string) (IPInfo, error) {
+	proxyURL, err := url.Parse(proxyEndpoint)
+	if err != nil {
+		return IPInfo{}, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	return fetchIPInfo(ctx, endpoint, transport)
+}
+
+func fetchIPInfo(ctx context.Context, endpoint string, transport http.RoundTripper) (IPInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return IPInfo{}, err
+	}
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return IPInfo{}, mapError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return IPInfo{}, decodeHTTPError(resp)
+	}
+	var out IPInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return IPInfo{}, err
+	}
+	return out, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) error {

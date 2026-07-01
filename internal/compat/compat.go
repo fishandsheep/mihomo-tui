@@ -31,6 +31,8 @@ type Config struct {
 	Mode         string
 	TunEnabled   bool
 	TunSupported bool
+	MixedPort    int
+	Port         int
 }
 
 type DelayHistory struct {
@@ -79,6 +81,8 @@ func NormalizeConfig(raw map[string]any) Config {
 		Mode:         strings.ToLower(stringValue(raw["mode"])),
 		TunEnabled:   boolValue(tunRaw["enable"]),
 		TunSupported: tunOK,
+		MixedPort:    int(numberValue(raw["mixed-port"])),
+		Port:         int(numberValue(raw["port"])),
 	}
 }
 

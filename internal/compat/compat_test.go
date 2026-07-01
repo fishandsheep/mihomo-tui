@@ -71,13 +71,18 @@ func TestNormalizeConfigReadsTUN(t *testing.T) {
 	t.Parallel()
 
 	config := NormalizeConfig(map[string]any{
-		"mode": "global",
-		"tun":  map[string]any{"enable": true},
+		"mode":       "global",
+		"mixed-port": float64(7890),
+		"port":       float64(7891),
+		"tun":        map[string]any{"enable": true},
 	})
 	if config.Mode != "global" {
 		t.Fatalf("unexpected mode: %s", config.Mode)
 	}
 	if !config.TunSupported || !config.TunEnabled {
 		t.Fatalf("unexpected tun config: %#v", config)
+	}
+	if config.MixedPort != 7890 || config.Port != 7891 {
+		t.Fatalf("unexpected proxy ports: %#v", config)
 	}
 }

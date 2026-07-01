@@ -63,7 +63,9 @@ go build -o ./bin/mihomo-tui ./cmd/tui
 - independent TUN `on/off` toggle
 - proxy group browsing
 - node switching
+- nested group node visibility for fallback/auto-select entries
 - delay testing via `http://cp.cloudflare.com`
+- public IP info in Main via `https://ipinfo.io/json`, refreshed every 60s
 - full-screen, resize-safe, lazygit-inspired terminal layout
 - mouse-aware panes with double-click apply
 - mode-aware group filtering: `rule` shows `Halsh Cloud`, `global` shows `GLOBAL`
@@ -77,10 +79,25 @@ go build -o ./bin/mihomo-tui ./cmd/tui
   - modes: switch mode
   - TUN: toggle `on/off`
   - nodes: switch proxy
+- `r` refreshes controller data and public IP info
 - mouse
   - single click: focus/select
   - double click: apply action
   - wheel: scroll hovered pane
+
+## Main Pane
+
+The Main pane shows controller/session details, selected group/node details, event
+history, and public IP info from `ipinfo.io`. IP info refreshes every 60 seconds;
+the Main header and Inspector detail show the refresh countdown.
+
+When the active controller exposes `mixed-port` or `port` in `/configs`, IP info
+requests are sent through that local Mihomo proxy port so changing Nodes updates
+the observed public IP. Unix socket controllers cannot expose a proxy host, so IP
+info falls back to direct requests unless a controller URL is used.
+
+Fallback, URLTest, and selector entries in the Nodes pane show their concrete
+selected node, for example `故障转移  [VIP1 英国]  [up] -`.
 
 ## Build
 

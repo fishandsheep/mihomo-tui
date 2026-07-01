@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,10 +24,12 @@ type fakeService struct {
 	tunErr   error
 	proxyErr error
 	delayErr error
+	ipErr    error
 
 	setModeCalls []string
 	setTUNCalls  []bool
 	switchCalls  [][2]string
+	ipCalls      int
 }
 
 func (f *fakeService) LoadSnapshot(context.Context, profile.Profile) (compat.Snapshot, compat.Capabilities, error) {
@@ -64,6 +67,24 @@ func (f *fakeService) RunDelay(context.Context, profile.Profile, string) (api.De
 	return api.DelayResult{Delay: 25}, nil
 }
 
+func (f *fakeService) LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, error) {
+	f.ipCalls++
+	if f.ipErr != nil {
+		return api.IPInfo{}, f.ipErr
+	}
+	return api.IPInfo{
+		IP:       "203.0.113.8",
+		City:     "Tokyo",
+		Region:   "Tokyo",
+		Country:  "JP",
+		Loc:      "35.6895,139.6917",
+		Org:      "AS64500 Example",
+		Postal:   "100-0001",
+		Timezone: "Asia/Tokyo",
+		Readme:   "https://ipinfo.io/missingauth",
+	}, nil
+}
+
 func TestPaneSwitch(t *testing.T) {
 	t.Parallel()
 
@@ -72,6 +93,66 @@ func TestPaneSwitch(t *testing.T) {
 	got := next.(Model)
 	if got.activePane != PaneNodes {
 		t.Fatalf("expected pane nodes, got %v", got.activePane)
+	}
+}
+
+func TestIPInfoLoadsOnInitAndManualRefresh(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
+	model := newTestModel(svc)
+	model.now = func() time.Time { return time.Date(2026, 7, 1, 10, 30, 0, 0, time.UTC) }
+
+	for _, cmd := range model.Init()().(tea.BatchMsg)[:2] {
+		msg := cmd()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	if svc.ipCalls != 1 {
+		t.Fatalf("expected init ip load, got %d", svc.ipCalls)
+	}
+	detail := model.mainDetail(model.currentGroup(), model.selectedNode())
+	if !strings.Contains(detail, "IP Info") || !strings.Contains(detail, "ip: 203.0.113.8") || !strings.Contains(detail, "updated: 2026-07-01 10:30:00") {
+		t.Fatalf("ip info missing from detail:\n%s", detail)
+	}
+	if !strings.Contains(detail, "refresh in: 60s") || model.renderState().IPRefreshText != "60s" {
+		t.Fatalf("ip refresh countdown missing, state=%q detail:\n%s", model.renderState().IPRefreshText, detail)
+	}
+
+	model.now = func() time.Time { return time.Date(2026, 7, 1, 10, 30, 30, 0, time.UTC) }
+	if got := model.ipInfoRefreshText(); got != "30s" {
+		t.Fatalf("expected 30s countdown, got %q", got)
+	}
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = next.(Model)
+	for _, cmd := range cmd().(tea.BatchMsg) {
+		msg := cmd()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	if svc.ipCalls != 2 {
+		t.Fatalf("expected manual refresh to load ip info, got %d", svc.ipCalls)
+	}
+}
+
+func TestIPInfoRefreshTick(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
+	model := newTestModel(svc)
+
+	next, cmd := model.Update(ipInfoTickMsg(time.Now()))
+	model = next.(Model)
+	batch := cmd().(tea.BatchMsg)
+	if len(batch) != 2 {
+		t.Fatalf("expected ip refresh batch, got %d commands", len(batch))
+	}
+	msg := batch[0]()
+	next, _ = model.Update(msg)
+	model = next.(Model)
+	if svc.ipCalls != 1 || model.ipInfo.IP != "203.0.113.8" {
+		t.Fatalf("expected ip info refresh, calls=%d info=%#v", svc.ipCalls, model.ipInfo)
 	}
 }
 
@@ -172,12 +253,21 @@ func TestEnterDoesNothingAndSpaceSwitchesNode(t *testing.T) {
 	model.nodeCursor = 1
 	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeySpace})
 	model = next.(Model)
-	model, _ = runCmd(t, model, cmd)
+	var nextCmd tea.Cmd
+	model, nextCmd = runCmd(t, model, cmd)
 	if len(svc.switchCalls) != 1 {
 		t.Fatalf("expected switch call")
 	}
 	if svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
 		t.Fatalf("unexpected switch call: %#v", svc.switchCalls[0])
+	}
+	for _, cmd := range nextCmd().(tea.BatchMsg) {
+		msg := cmd()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	if svc.ipCalls != 1 {
+		t.Fatalf("expected node switch to refresh ip info, got %d calls", svc.ipCalls)
 	}
 }
 
@@ -357,6 +447,34 @@ func TestKeyboardCursorMovementAutoScrollsLists(t *testing.T) {
 	}
 	if model.nodeOffset == 0 {
 		t.Fatalf("expected node offset to auto-scroll")
+	}
+}
+
+func TestNodeItemsShowNestedGroupCurrentNode(t *testing.T) {
+	t.Parallel()
+
+	model := newTestModel(&fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}})
+	model.snapshot.Groups = []compat.ProxyGroup{{
+		Name:    "Halsh Cloud",
+		Type:    "selector",
+		Now:     "故障转移",
+		Options: []string{"故障转移", "自动选择", "DIRECT"},
+	}}
+	model.snapshot.Proxies = map[string]compat.Proxy{
+		"故障转移":   {Name: "故障转移", Type: "fallback", Now: "VIP1 英国", Alive: true},
+		"自动选择":   {Name: "自动选择", Type: "urltest", Now: "VIP2 日本", Alive: true},
+		"DIRECT": {Name: "DIRECT", Type: "direct", Alive: true},
+	}
+
+	items := model.nodeItems()
+	if !strings.Contains(items[0].Secondary, "[VIP1 英国]") {
+		t.Fatalf("expected fallback current node in secondary, got %q", items[0].Secondary)
+	}
+	if !strings.Contains(items[1].Secondary, "[VIP2 日本]") {
+		t.Fatalf("expected urltest current node in secondary, got %q", items[1].Secondary)
+	}
+	if strings.Contains(items[2].Secondary, "[]") {
+		t.Fatalf("direct node should not render empty nested node, got %q", items[2].Secondary)
 	}
 }
 
