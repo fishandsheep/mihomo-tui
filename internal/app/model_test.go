@@ -17,19 +17,22 @@ import (
 )
 
 type fakeService struct {
-	snapshot compat.Snapshot
-	caps     compat.Capabilities
-	loadErr  error
-	modeErr  error
-	tunErr   error
-	proxyErr error
-	delayErr error
-	ipErr    error
+	snapshot       compat.Snapshot
+	caps           compat.Capabilities
+	loadErr        error
+	modeErr        error
+	tunErr         error
+	proxyErr       error
+	delayErr       error
+	ipErr          error
+	delayByName    map[string]int
+	delayErrByName map[string]error
 
-	setModeCalls []string
-	setTUNCalls  []bool
-	switchCalls  [][2]string
-	ipCalls      int
+	setModeCalls  []string
+	setTUNCalls   []bool
+	switchCalls   [][2]string
+	ipCalls       int
+	directIPCalls int
 }
 
 func (f *fakeService) LoadSnapshot(context.Context, profile.Profile) (compat.Snapshot, compat.Capabilities, error) {
@@ -60,9 +63,15 @@ func (f *fakeService) SwitchProxy(_ context.Context, _ profile.Profile, group, n
 	return compat.Proxy{Name: group, Now: node}, nil
 }
 
-func (f *fakeService) RunDelay(context.Context, profile.Profile, string) (api.DelayResult, error) {
+func (f *fakeService) RunDelay(_ context.Context, _ profile.Profile, name string) (api.DelayResult, error) {
+	if err := f.delayErrByName[name]; err != nil {
+		return api.DelayResult{}, err
+	}
 	if f.delayErr != nil {
 		return api.DelayResult{}, f.delayErr
+	}
+	if delay := f.delayByName[name]; delay > 0 {
+		return api.DelayResult{Delay: delay}, nil
 	}
 	return api.DelayResult{Delay: 25}, nil
 }
@@ -83,6 +92,11 @@ func (f *fakeService) LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, 
 		Timezone: "Asia/Tokyo",
 		Readme:   "https://ipinfo.io/missingauth",
 	}, nil
+}
+
+func (f *fakeService) LoadDirectIPInfo(context.Context) (api.IPInfo, error) {
+	f.directIPCalls++
+	return api.IPInfo{IP: "198.51.100.9", Country: "US"}, nil
 }
 
 func TestPaneSwitch(t *testing.T) {
@@ -560,6 +574,213 @@ func TestGroupSelectionPersistsPerMode(t *testing.T) {
 	}
 }
 
+func TestAutoGroupMarksNodesAndToggles(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}, delayByName: map[string]int{"NodeA": 10, "NodeB": 20}}
+	model := newTestModel(svc)
+	model.activePane = PaneNodes
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = next.(Model)
+	if cmd != nil {
+		t.Fatalf("marking auto node should not run command")
+	}
+	model.nodeCursor = 1
+	next, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = next.(Model)
+	next, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	model = next.(Model)
+	if cmd != nil {
+		msg := cmd()
+		next, cmd = model.Update(msg)
+		model = next.(Model)
+		if cmd != nil {
+			t.Fatalf("already best node should not switch")
+		}
+	}
+
+	auto := model.autoGroups["Halsh Cloud"]
+	if auto == nil || !auto.Enabled || !auto.Nodes["NodeA"] || !auto.Nodes["NodeB"] {
+		t.Fatalf("unexpected auto group: %#v", auto)
+	}
+	if items := model.nodeItems(); !strings.Contains(items[0].Secondary, "[auto-on]") {
+		t.Fatalf("expected auto marker, got %#v", items[0])
+	}
+}
+
+func TestAutoGroupKeepsReachableCurrentNodeEvenWhenSlower(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot:    fixtureSnapshot(),
+		caps:        compat.Capabilities{Delay: true},
+		delayByName: map[string]int{"NodeA": 10, "NodeB": 25},
+	}
+	model := newTestModel(svc)
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+	snapshot := fixtureSnapshot()
+	snapshot.Groups[0].Now = "NodeB"
+
+	next, cmd := model.Update(snapshotLoadedMsg{snapshot: snapshot, caps: compat.Capabilities{Delay: true}})
+	model = next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected auto probe command")
+	}
+	model, cmd = runCmd(t, model, cmd)
+	if cmd != nil {
+		t.Fatalf("reachable current node should not switch")
+	}
+	if len(svc.switchCalls) != 0 {
+		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
+	}
+}
+
+func TestAutoGroupFailsOverWhenCurrentNodeDown(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot:       fixtureSnapshot(),
+		caps:           compat.Capabilities{Delay: true},
+		delayByName:    map[string]int{"NodeB": 20},
+		delayErrByName: map[string]error{"NodeA": errors.New("request timeout")},
+	}
+	model := newTestModel(svc)
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+	snapshot := fixtureSnapshot()
+	snapshot.Proxies["NodeA"] = compat.Proxy{Name: "NodeA", Alive: false, History: []compat.DelayHistory{{Delay: 10}}}
+	snapshot.Groups[0].Now = "NodeA"
+
+	next, cmd := model.Update(snapshotLoadedMsg{snapshot: snapshot, caps: compat.Capabilities{Delay: true}})
+	model = next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected auto probe command")
+	}
+	model, cmd = runCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatalf("expected failover command")
+	}
+	model = runBatchCmd(t, model, cmd)
+	if len(svc.switchCalls) != 1 || svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
+		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
+	}
+	if len(svc.setTUNCalls) != 1 || !svc.setTUNCalls[0] {
+		t.Fatalf("expected tun on during recovery, got %#v", svc.setTUNCalls)
+	}
+}
+
+func TestAutoGroupProbesAfterIPInfoTimeout(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot:       fixtureSnapshot(),
+		caps:           compat.Capabilities{Delay: true},
+		ipErr:          &api.Error{Kind: api.ErrTimeout, Message: "request timeout"},
+		delayByName:    map[string]int{"NodeB": 20},
+		delayErrByName: map[string]error{"NodeA": errors.New("request timeout")},
+	}
+	model := newTestModel(svc)
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+
+	next, cmd := model.Update(ipInfoLoadedMsg{err: svc.ipErr})
+	model = next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected auto probe after ip timeout")
+	}
+	model, cmd = runCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatalf("expected switch after auto probe")
+	}
+	model = runBatchCmd(t, model, cmd)
+	if len(svc.switchCalls) != 1 || svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
+		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
+	}
+}
+
+func TestAutoGroupNoProxyModeWhenAllNodesDown(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot: fixtureSnapshot(),
+		caps:     compat.Capabilities{Delay: true},
+		delayErrByName: map[string]error{
+			"NodeA": errors.New("request timeout"),
+			"NodeB": errors.New("request timeout"),
+		},
+	}
+	model := newTestModel(svc)
+	model.snapshot.Config.TunEnabled = true
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+
+	next, cmd := model.Update(snapshotLoadedMsg{snapshot: model.snapshot, caps: compat.Capabilities{Delay: true}})
+	model = next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected auto probe command")
+	}
+	model, cmd = runCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatalf("expected no proxy commands")
+	}
+	for _, cmd := range cmd().(tea.BatchMsg) {
+		msg := cmd()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	if !model.noProxyMode {
+		t.Fatalf("expected no proxy mode")
+	}
+	if len(svc.setTUNCalls) != 1 || svc.setTUNCalls[0] {
+		t.Fatalf("expected tun off, got %#v", svc.setTUNCalls)
+	}
+	if svc.directIPCalls != 1 || svc.ipCalls != 0 {
+		t.Fatalf("expected direct ip info, direct=%d proxied=%d", svc.directIPCalls, svc.ipCalls)
+	}
+	detail := model.mainDetail(model.currentGroup(), model.selectedNode())
+	if !strings.Contains(detail, "IP Info (no proxy mode)") || !strings.Contains(detail, "mode: no proxy") {
+		t.Fatalf("expected no proxy detail, got:\n%s", detail)
+	}
+}
+
+func TestAutoGroupRecoversFromNoProxyMode(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot:    fixtureSnapshot(),
+		caps:        compat.Capabilities{Delay: true},
+		delayByName: map[string]int{"NodeB": 20},
+		delayErrByName: map[string]error{
+			"NodeA": errors.New("request timeout"),
+		},
+	}
+	model := newTestModel(svc)
+	model.noProxyMode = true
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+
+	next, cmd := model.Update(snapshotLoadedMsg{snapshot: model.snapshot, caps: compat.Capabilities{Delay: true}})
+	model = next.(Model)
+	if cmd == nil {
+		t.Fatalf("expected auto probe command")
+	}
+	model, cmd = runCmd(t, model, cmd)
+	if cmd == nil {
+		t.Fatalf("expected recovery commands")
+	}
+	for _, cmd := range cmd().(tea.BatchMsg) {
+		msg := cmd()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	if model.noProxyMode {
+		t.Fatalf("expected no proxy mode off")
+	}
+	if len(svc.switchCalls) != 1 || svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
+		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
+	}
+	if len(svc.setTUNCalls) != 1 || !svc.setTUNCalls[0] {
+		t.Fatalf("expected tun on, got %#v", svc.setTUNCalls)
+	}
+}
+
 func newTestModel(svc Service) Model {
 	model := NewModel(Options{
 		Store: &profile.Store{},
@@ -586,6 +807,25 @@ func runCmd(t *testing.T, model Model, cmd tea.Cmd) (Model, tea.Cmd) {
 	msg := cmd()
 	next, nextCmd := model.Update(msg)
 	return next.(Model), nextCmd
+}
+
+func runBatchCmd(t *testing.T, model Model, cmd tea.Cmd) Model {
+	t.Helper()
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		next, _ := model.Update(msg)
+		return next.(Model)
+	}
+	for _, item := range batch {
+		if item == nil {
+			continue
+		}
+		msg := item()
+		next, _ := model.Update(msg)
+		model = next.(Model)
+	}
+	return model
 }
 
 func fixtureSnapshot() compat.Snapshot {

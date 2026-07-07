@@ -59,6 +59,7 @@ type Service interface {
 	SwitchProxy(context.Context, profile.Profile, string, string) (compat.Proxy, error)
 	RunDelay(context.Context, profile.Profile, string) (api.DelayResult, error)
 	LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, error)
+	LoadDirectIPInfo(context.Context) (api.IPInfo, error)
 }
 
 type controllerService struct{}
@@ -72,6 +73,11 @@ type clickState struct {
 	pane  Pane
 	index int
 	at    time.Time
+}
+
+type autoGroup struct {
+	Enabled bool
+	Nodes   map[string]bool
 }
 
 type Model struct {
@@ -112,8 +118,10 @@ type Model struct {
 	ipInfoErr            string
 	ipInfoUpdatedAt      time.Time
 	ipInfoNextRefreshAt  time.Time
+	noProxyMode          bool
 	events               []string
 	preferredGroupByMode map[string]string
+	autoGroups           map[string]*autoGroup
 	lastClick            clickState
 	now                  func() time.Time
 }
@@ -143,6 +151,13 @@ type delayResultMsg struct {
 	name   string
 	result api.DelayResult
 	err    error
+}
+
+type autoProbeMsg struct {
+	group     string
+	best      string
+	currentOK bool
+	allDown   bool
 }
 
 type ipInfoLoadedMsg struct {
@@ -175,6 +190,7 @@ func NewModel(opts Options) Model {
 		activeMainTab:        MainTabInspector,
 		screenModeIndex:      len(view.ScreenModes) - 1,
 		preferredGroupByMode: make(map[string]string, 2),
+		autoGroups:           make(map[string]*autoGroup),
 		now:                  time.Now,
 	}
 	model.sessionCursor = model.indexSession(active.Name, active.Target())
@@ -218,7 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modeCursor = m.indexMode(msg.snapshot.Config.Mode)
 		m.syncCursors()
 		m.ensureOffsets()
-		return m, nil
+		return m, m.autoProbeCmd()
 	case modeChangedMsg:
 		if msg.err != nil {
 			m.toast = statusMessage(msg.err)
@@ -258,6 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name = m.currentGroup().Name
 		}
 		m.toast = "group updated: " + name
+		if msg.proxy.Now != "" {
+			m.toast += " -> " + msg.proxy.Now
+		}
 		m.pushEvent(m.toast)
 		m.ensureOffsets()
 		return m, tea.Batch(m.loadSnapshotCmd(), m.loadIPInfoCmd())
@@ -271,12 +290,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = fmt.Sprintf("%s delay: %dms", msg.name, msg.result.Delay)
 		m.pushEvent(m.toast)
 		return m, nil
+	case autoProbeMsg:
+		if msg.group == "" {
+			return m, nil
+		}
+		group := m.currentGroup()
+		if group.Name != msg.group {
+			return m, nil
+		}
+		if msg.allDown {
+			m.noProxyMode = true
+			m.toast = "auto group down: no proxy mode"
+			m.pushEvent(m.toast)
+			return m, tea.Batch(m.setTUNCmd(false), m.loadIPInfoCmd())
+		}
+		if msg.currentOK && !m.noProxyMode {
+			return m, nil
+		}
+		if msg.best == "" || group.Now == msg.best {
+			if m.noProxyMode {
+				m.noProxyMode = false
+				m.toast = "auto group recovered: " + valueOrDash(msg.best)
+				m.pushEvent(m.toast)
+				return m, tea.Batch(m.setTUNCmd(true), m.loadIPInfoCmd())
+			}
+			return m, nil
+		}
+		m.noProxyMode = false
+		m.toast = "auto group recovered: " + msg.best
+		m.pushEvent(m.toast)
+		return m, tea.Batch(m.switchProxyCmd(msg.group, msg.best), m.setTUNCmd(true))
 	case ipInfoLoadedMsg:
 		if msg.err != nil {
 			m.ipInfoErr = statusMessage(msg.err)
 			m.toast = "ip info: " + m.ipInfoErr
 			m.pushEvent(m.toast)
-			return m, nil
+			return m, m.autoProbeCmd()
 		}
 		m.ipInfo = msg.info
 		m.ipInfoErr = ""
@@ -323,6 +372,7 @@ func (m Model) renderState() view.State {
 		ConnectionText: m.connectionStatusText(),
 		DelaySupported: m.capabilities.Delay,
 		IPRefreshText:  m.ipInfoRefreshText(),
+		NoProxyMode:    m.noProxyMode,
 		ActivePane:     view.Pane(m.activePane),
 		SessionItems:   m.sessionItems(),
 		TUNItems:       m.tunItems(),
@@ -459,6 +509,16 @@ func (m Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.delayCmd(name)
+	case "a":
+		if m.activePane == PaneNodes {
+			m.toggleAutoNode()
+			m.ensureOffsets()
+			return m, nil
+		}
+	case "A":
+		if m.activePane == PaneNodes || m.activePane == PaneGroups {
+			return m.toggleAutoGroup()
+		}
 	}
 
 	return m, nil
@@ -578,6 +638,49 @@ func (m Model) handleSpace() (tea.Model, tea.Cmd) {
 
 func (m Model) handleTUNToggle() (tea.Model, tea.Cmd) {
 	return m, m.setTUNCmd(!m.snapshot.Config.TunEnabled)
+}
+
+func (m *Model) toggleAutoNode() {
+	group := m.currentGroup()
+	node := m.selectedNode()
+	if group.Name == "" || node == "" {
+		return
+	}
+	auto := m.ensureAutoGroup(group.Name)
+	if auto.Nodes[node] {
+		delete(auto.Nodes, node)
+		m.toast = "auto node removed: " + node
+		m.pushEvent(m.toast)
+		return
+	}
+	auto.Nodes[node] = true
+	m.toast = "auto node added: " + node
+	m.pushEvent(m.toast)
+}
+
+func (m *Model) toggleAutoGroup() (tea.Model, tea.Cmd) {
+	group := m.currentGroup()
+	if group.Name == "" {
+		return *m, nil
+	}
+	auto := m.ensureAutoGroup(group.Name)
+	if len(auto.Nodes) == 0 {
+		if group.Now != "" {
+			auto.Nodes[group.Now] = true
+		}
+		if node := m.selectedNode(); node != "" {
+			auto.Nodes[node] = true
+		}
+	}
+	auto.Enabled = !auto.Enabled
+	state := "off"
+	if auto.Enabled {
+		state = "on"
+	}
+	m.toast = fmt.Sprintf("auto group %s: %s (%d nodes)", state, group.Name, len(auto.Nodes))
+	m.pushEvent(m.toast)
+	m.ensureOffsets()
+	return *m, m.autoProbeCmd()
 }
 
 func (m *Model) focusNext() {
@@ -886,10 +989,92 @@ func (m Model) delayCmd(name string) tea.Cmd {
 	}
 }
 
+func (m Model) autoProbeCmd() tea.Cmd {
+	group := m.currentGroup()
+	if group.Name == "" || !m.capabilities.Delay {
+		return nil
+	}
+	targets := m.autoProbeTargets(group)
+	if len(targets) == 0 {
+		return nil
+	}
+	profile := m.activeProfile
+	service := m.svc
+	current := group.Now
+	return func() tea.Msg {
+		timeout := time.Duration(len(targets)) * 6 * time.Second
+		if timeout < 8*time.Second {
+			timeout = 8 * time.Second
+		}
+		if timeout > 30*time.Second {
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		best := ""
+		bestDelay := 0
+		currentOK := false
+		for _, name := range targets {
+			result, err := service.RunDelay(ctx, profile, name)
+			if err != nil || result.Delay <= 0 {
+				continue
+			}
+			if name == current {
+				currentOK = true
+			}
+			if best == "" || result.Delay < bestDelay {
+				best = name
+				bestDelay = result.Delay
+			}
+		}
+		return autoProbeMsg{
+			group:     group.Name,
+			best:      best,
+			currentOK: currentOK,
+			allDown:   best == "",
+		}
+	}
+}
+
+func (m Model) autoProbeTargets(group compat.ProxyGroup) []string {
+	auto := m.autoGroups[group.Name]
+	if auto == nil || !auto.Enabled || len(auto.Nodes) == 0 {
+		return nil
+	}
+	targets := make([]string, 0, len(auto.Nodes))
+	for _, name := range group.Options {
+		if !auto.Nodes[name] {
+			continue
+		}
+		targets = append(targets, name)
+	}
+	return targets
+}
+
+func (m *Model) ensureAutoGroup(name string) *autoGroup {
+	if m.autoGroups == nil {
+		m.autoGroups = make(map[string]*autoGroup)
+	}
+	auto := m.autoGroups[name]
+	if auto == nil {
+		auto = &autoGroup{Nodes: make(map[string]bool)}
+		m.autoGroups[name] = auto
+	}
+	if auto.Nodes == nil {
+		auto.Nodes = make(map[string]bool)
+	}
+	return auto
+}
+
 func (m Model) loadIPInfoCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
+		if m.noProxyMode {
+			info, err := m.svc.LoadDirectIPInfo(ctx)
+			return ipInfoLoadedMsg{info: info, err: err}
+		}
 		info, err := m.svc.LoadIPInfo(ctx, m.activeProfile)
 		return ipInfoLoadedMsg{info: info, err: err}
 	}
@@ -971,6 +1156,12 @@ func (m Model) groupItems() []view.Item {
 			}
 			secondary += "[" + group.Type + "]"
 		}
+		if auto := m.autoGroups[group.Name]; auto != nil && auto.Enabled {
+			if secondary != "" {
+				secondary += "  "
+			}
+			secondary += fmt.Sprintf("[auto:%d]", len(auto.Nodes))
+		}
 		items = append(items, view.Item{Primary: group.Name, Secondary: secondary})
 	}
 	return items
@@ -992,6 +1183,13 @@ func (m Model) nodeItems() []view.Item {
 		if proxy.Now != "" {
 			secondaryParts = append(secondaryParts, "["+proxy.Now+"]")
 		}
+		if auto := m.autoGroups[group.Name]; auto != nil && auto.Nodes[name] {
+			state := "auto"
+			if auto.Enabled {
+				state = "auto-on"
+			}
+			secondaryParts = append(secondaryParts, "["+state+"]")
+		}
 		secondaryParts = append(secondaryParts, fmt.Sprintf("[%s] %s", alive, delay))
 		items = append(items, view.Item{
 			Primary:        name,
@@ -1006,7 +1204,7 @@ func (m Model) nodeItems() []view.Item {
 func (m Model) mainDetail(group compat.ProxyGroup, node string) string {
 	switch m.activeMainTab {
 	case MainTabInspector:
-		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.connectionErr, m.ipInfo, m.ipInfoErr, m.ipInfoUpdatedAt, m.ipInfoRefreshText())
+		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.autoGroups[group.Name], m.noProxyMode, m.connectionErr, m.ipInfo, m.ipInfoErr, m.ipInfoUpdatedAt, m.ipInfoRefreshText())
 	case MainTabDelay:
 		return delayHistoryDetail(m.snapshot, group, node)
 	case MainTabEvents:
@@ -1020,7 +1218,7 @@ func (m Model) mainDetail(group compat.ProxyGroup, node string) string {
 }
 
 func (m Model) footerText() string {
-	return "tab cycle  j/k move  pgup/pgdn scroll  space apply  h/l tabs  d delay  r refresh  ip 60s  q quit"
+	return "tab cycle  j/k move  pgup/pgdn scroll  space apply  a mark auto  A auto on/off  d delay  r refresh  q quit"
 }
 
 func (m Model) currentScreenMode() (view.ScreenMode, bool) {
@@ -1127,7 +1325,7 @@ func resolveActiveProfile(opts Options, sessions []sessionEntry) profile.Profile
 	return profile.Profile{Name: "no-session"}
 }
 
-func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node, connectionErr string, ipInfo api.IPInfo, ipInfoErr string, ipInfoUpdatedAt time.Time, ipRefreshText string) string {
+func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node string, auto *autoGroup, noProxyMode bool, connectionErr string, ipInfo api.IPInfo, ipInfoErr string, ipInfoUpdatedAt time.Time, ipRefreshText string) string {
 	lines := []string{
 		"Session",
 		"  name: " + valueOrDash(active.Name),
@@ -1143,9 +1341,16 @@ func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps comp
 	if connectionErr != "" {
 		lines = append(lines, "  error: "+connectionErr)
 	}
+	ipTitle := "IP Info"
+	ipMode := "proxied"
+	if noProxyMode {
+		ipTitle = "IP Info (no proxy mode)"
+		ipMode = "no proxy"
+	}
 	lines = append(lines,
 		"",
-		"IP Info",
+		ipTitle,
+		"  mode: "+ipMode,
 		"  ip: "+valueOrDash(ipInfo.IP),
 		"  hostname: "+valueOrDash(ipInfo.Hostname),
 		"  city: "+valueOrDash(ipInfo.City),
@@ -1171,6 +1376,12 @@ func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps comp
 		"  current: "+valueOrDash(group.Now),
 		"  test-url: "+valueOrDash(group.TestURL),
 	)
+	if auto != nil {
+		lines = append(lines,
+			"  auto: "+boolWord(auto.Enabled),
+			"  auto-nodes: "+autoNodeNames(group.Options, auto),
+		)
+	}
 	if node != "" {
 		proxy := snapshot.Proxies[node]
 		lines = append(lines,
@@ -1219,11 +1430,34 @@ func historyText(history []compat.DelayHistory) string {
 	if len(history) == 0 {
 		return "-"
 	}
-	last := history[len(history)-1]
-	if last.Delay == 0 {
+	delay := latestDelay(history)
+	if delay == 0 {
 		return "unavailable"
 	}
-	return fmt.Sprintf("%dms", last.Delay)
+	return fmt.Sprintf("%dms", delay)
+}
+
+func latestDelay(history []compat.DelayHistory) int {
+	if len(history) == 0 {
+		return 0
+	}
+	return history[len(history)-1].Delay
+}
+
+func autoNodeNames(options []string, auto *autoGroup) string {
+	if auto == nil || len(auto.Nodes) == 0 {
+		return "-"
+	}
+	names := make([]string, 0, len(auto.Nodes))
+	for _, name := range options {
+		if auto.Nodes[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ", ")
 }
 
 func delayText(err error) string {
@@ -1480,6 +1714,10 @@ func (controllerService) LoadIPInfo(ctx context.Context, p profile.Profile) (api
 	if endpoint := proxyEndpoint(p, compat.NormalizeConfig(configRaw)); endpoint != "" {
 		return api.FetchIPInfoViaHTTPProxy(ctx, api.IPInfoURL, endpoint)
 	}
+	return api.GetIPInfo(ctx)
+}
+
+func (controllerService) LoadDirectIPInfo(ctx context.Context) (api.IPInfo, error) {
 	return api.GetIPInfo(ctx)
 }
 

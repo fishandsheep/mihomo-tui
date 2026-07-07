@@ -63,6 +63,7 @@ go build -o ./bin/mihomo-tui ./cmd/tui
 - independent TUN `on/off` toggle
 - proxy group browsing
 - node switching
+- local auto groups: mark several nodes, then fail over to the lowest-delay reachable node only when the current node is down
 - nested group node visibility for fallback/auto-select entries
 - delay testing via `http://cp.cloudflare.com`
 - public IP info in Main via `https://ipinfo.io/json`, refreshed every 60s
@@ -79,6 +80,9 @@ go build -o ./bin/mihomo-tui ./cmd/tui
   - modes: switch mode
   - TUN: toggle `on/off`
   - nodes: switch proxy
+- `a` marks/unmarks the selected node for the current local auto group
+- `A` turns the current local auto group on/off
+- if every marked node is down, auto mode turns TUN off and shows IP Info in no-proxy mode until a node recovers
 - `r` refreshes controller data and public IP info
 - mouse
   - single click: focus/select
@@ -98,6 +102,23 @@ info falls back to direct requests unless a controller URL is used.
 
 Fallback, URLTest, and selector entries in the Nodes pane show their concrete
 selected node, for example `故障转移  [VIP1 英国]  [up] -`.
+
+## Auto Groups
+
+Local auto groups let you mark a small set of candidate nodes for the currently
+selected Mihomo group. In the Nodes pane, press `a` to mark or unmark a node, then
+press `A` to enable auto mode for that group.
+
+Auto mode probes marked nodes with the controller delay endpoint. It keeps the
+current node as long as that node is reachable, so it does not switch just because
+another marked node has lower latency. When the current node is unreachable, it
+fails over to the reachable marked node with the lowest delay.
+
+If every marked node is unreachable, mihomo-tui turns TUN off and loads IP Info
+without using the Mihomo proxy. The Inspector shows `IP Info (no proxy mode)` in
+a warning color while this fallback is active. When a marked node becomes
+reachable again, auto mode switches back to the best reachable node and turns TUN
+on.
 
 ## Build
 
