@@ -247,3 +247,91 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 		t.Fatalf("unexpected snapshot groups: %#v", snapshot.Groups)
 	}
 }
+
+func TestControllerServiceSetTUNReturnsErrorWhenBackendDoesNotConfirm(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/configs":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/configs":
+			json.NewEncoder(w).Encode(map[string]any{"mode": "rule", "tun": map[string]bool{"enable": false}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	_, err := controllerService{}.SetTUN(context.Background(), profile.Profile{
+		Name:          "one",
+		ControllerURL: server.URL,
+	}, true)
+	if err == nil || !strings.Contains(err.Error(), "did not apply TUN=true") {
+		t.Fatalf("expected unconfirmed TUN error, got %v", err)
+	}
+}
+
+func TestControllerServiceSetTUNWaitsForBackendState(t *testing.T) {
+	t.Parallel()
+
+	gets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/configs":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/configs":
+			gets++
+			enabled := gets > 1
+			json.NewEncoder(w).Encode(map[string]any{"mode": "rule", "tun": map[string]bool{"enable": enabled}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config, err := controllerService{}.SetTUN(context.Background(), profile.Profile{
+		Name:          "one",
+		ControllerURL: server.URL,
+	}, true)
+	if err != nil {
+		t.Fatalf("SetTUN failed: %v", err)
+	}
+	if !config.TunEnabled {
+		t.Fatalf("expected backend tun state true, got %#v", config)
+	}
+	if gets < 2 {
+		t.Fatalf("expected backend state polling, got %d GETs", gets)
+	}
+}
+
+func TestControllerServiceLoadIPInfoRejectsDirectFallback(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/configs" {
+			http.Error(w, "controller unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	_, err := controllerService{}.LoadIPInfo(context.Background(), profile.Profile{
+		Name:          "one",
+		ControllerURL: server.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "load proxy config") {
+		t.Fatalf("expected proxied IP configuration error, got %v", err)
+	}
+}
+
+func TestProxyEndpointPrefersMixedPort(t *testing.T) {
+	endpoint := proxyEndpoint(profile.Profile{ControllerURL: "http://127.0.0.1:9090"}, compat.Config{
+		MixedPort: 7890,
+		Port:      7891,
+	})
+	if endpoint != "http://127.0.0.1:7890" {
+		t.Fatalf("unexpected proxy endpoint: %q", endpoint)
+	}
+}

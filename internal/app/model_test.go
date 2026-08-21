@@ -28,11 +28,10 @@ type fakeService struct {
 	delayByName    map[string]int
 	delayErrByName map[string]error
 
-	setModeCalls  []string
-	setTUNCalls   []bool
-	switchCalls   [][2]string
-	ipCalls       int
-	directIPCalls int
+	setModeCalls []string
+	setTUNCalls  []bool
+	switchCalls  [][2]string
+	ipCalls      int
 }
 
 func (f *fakeService) LoadSnapshot(context.Context, profile.Profile) (compat.Snapshot, compat.Capabilities, error) {
@@ -92,11 +91,6 @@ func (f *fakeService) LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, 
 		Timezone: "Asia/Tokyo",
 		Readme:   "https://ipinfo.io/missingauth",
 	}, nil
-}
-
-func (f *fakeService) LoadDirectIPInfo(context.Context) (api.IPInfo, error) {
-	f.directIPCalls++
-	return api.IPInfo{IP: "198.51.100.9", Country: "US"}, nil
 }
 
 func TestPaneSwitch(t *testing.T) {
@@ -208,22 +202,62 @@ func TestTUNToggleBySpaceAndMouse(t *testing.T) {
 		t.Fatalf("unexpected tun calls: %#v", svc.setTUNCalls)
 	}
 
-	now := time.Unix(100, 0)
-	model.now = func() time.Time { return now }
+	mouseSvc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
+	model = newTestModel(mouseSvc)
+	model.now = func() time.Time { return time.Unix(100, 0) }
 	layout := view.ComputeLayout(model.renderState())
 	pos := mouseClick(layout.TUN.X+2, layout.TUN.Y+1)
 
 	next, cmd = model.Update(pos)
 	model = next.(Model)
-	if cmd != nil {
-		t.Fatalf("first tun click should not trigger command")
+	if cmd == nil {
+		t.Fatalf("tun click should trigger command")
+	}
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected optimistic tun enabled after click")
+	}
+	model, _ = runCmd(t, model, cmd)
+	if len(mouseSvc.setTUNCalls) != 1 || !mouseSvc.setTUNCalls[0] {
+		t.Fatalf("unexpected tun calls after click: %#v", mouseSvc.setTUNCalls)
+	}
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected tun enabled after click")
 	}
 
-	now = now.Add(200 * time.Millisecond)
+	mouseSvc = &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
+	model = newTestModel(mouseSvc)
+	layout = view.ComputeLayout(model.renderState())
+	pos = mouseClick(layout.TUN.X+2, layout.TUN.Y)
+
 	next, cmd = model.Update(pos)
 	model = next.(Model)
 	if cmd == nil {
-		t.Fatalf("double click should trigger tun command")
+		t.Fatalf("tun title click should trigger command")
+	}
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected optimistic tun enabled after title click")
+	}
+}
+
+func TestTUNToggleFailureRollsBackOptimisticState(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}, tunErr: errors.New("boom")}
+	model := newTestModel(svc)
+	model.activePane = PaneTUN
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = next.(Model)
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected optimistic tun enabled before command completes")
+	}
+
+	model, _ = runCmd(t, model, cmd)
+	if model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected tun rollback after failure")
+	}
+	if model.toast != "boom" {
+		t.Fatalf("expected error toast, got %q", model.toast)
 	}
 }
 
@@ -664,8 +698,8 @@ func TestAutoGroupFailsOverWhenCurrentNodeDown(t *testing.T) {
 	if len(svc.switchCalls) != 1 || svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
 		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
 	}
-	if len(svc.setTUNCalls) != 1 || !svc.setTUNCalls[0] {
-		t.Fatalf("expected tun on during recovery, got %#v", svc.setTUNCalls)
+	if len(svc.setTUNCalls) != 0 {
+		t.Fatalf("auto failover must not change tun, got %#v", svc.setTUNCalls)
 	}
 }
 
@@ -697,7 +731,7 @@ func TestAutoGroupProbesAfterIPInfoTimeout(t *testing.T) {
 	}
 }
 
-func TestAutoGroupNoProxyModeWhenAllNodesDown(t *testing.T) {
+func TestAutoGroupAllNodesDownKeepsTUNAndIPRoute(t *testing.T) {
 	t.Parallel()
 
 	svc := &fakeService{
@@ -718,30 +752,21 @@ func TestAutoGroupNoProxyModeWhenAllNodesDown(t *testing.T) {
 		t.Fatalf("expected auto probe command")
 	}
 	model, cmd = runCmd(t, model, cmd)
-	if cmd == nil {
-		t.Fatalf("expected no proxy commands")
+	if cmd != nil {
+		t.Fatalf("all-down probe must not change route")
 	}
-	for _, cmd := range cmd().(tea.BatchMsg) {
-		msg := cmd()
-		next, _ := model.Update(msg)
-		model = next.(Model)
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("all-down probe must preserve tun state")
 	}
-	if !model.noProxyMode {
-		t.Fatalf("expected no proxy mode")
+	if len(svc.setTUNCalls) != 0 || svc.ipCalls != 0 {
+		t.Fatalf("all-down probe must not toggle tun or refresh direct IP: tun=%#v ip=%d", svc.setTUNCalls, svc.ipCalls)
 	}
-	if len(svc.setTUNCalls) != 1 || svc.setTUNCalls[0] {
-		t.Fatalf("expected tun off, got %#v", svc.setTUNCalls)
-	}
-	if svc.directIPCalls != 1 || svc.ipCalls != 0 {
-		t.Fatalf("expected direct ip info, direct=%d proxied=%d", svc.directIPCalls, svc.ipCalls)
-	}
-	detail := model.mainDetail(model.currentGroup(), model.selectedNode())
-	if !strings.Contains(detail, "IP Info (no proxy mode)") || !strings.Contains(detail, "mode: no proxy") {
-		t.Fatalf("expected no proxy detail, got:\n%s", detail)
+	if model.toast != "auto group down: keeping current route" {
+		t.Fatalf("unexpected all-down toast: %q", model.toast)
 	}
 }
 
-func TestAutoGroupRecoversFromNoProxyMode(t *testing.T) {
+func TestAutoGroupFailsOverWithoutChangingTUN(t *testing.T) {
 	t.Parallel()
 
 	svc := &fakeService{
@@ -753,7 +778,6 @@ func TestAutoGroupRecoversFromNoProxyMode(t *testing.T) {
 		},
 	}
 	model := newTestModel(svc)
-	model.noProxyMode = true
 	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
 
 	next, cmd := model.Update(snapshotLoadedMsg{snapshot: model.snapshot, caps: compat.Capabilities{Delay: true}})
@@ -763,21 +787,33 @@ func TestAutoGroupRecoversFromNoProxyMode(t *testing.T) {
 	}
 	model, cmd = runCmd(t, model, cmd)
 	if cmd == nil {
-		t.Fatalf("expected recovery commands")
+		t.Fatalf("expected failover command")
 	}
-	for _, cmd := range cmd().(tea.BatchMsg) {
-		msg := cmd()
-		next, _ := model.Update(msg)
-		model = next.(Model)
-	}
-	if model.noProxyMode {
-		t.Fatalf("expected no proxy mode off")
-	}
+	model, _ = runCmd(t, model, cmd)
 	if len(svc.switchCalls) != 1 || svc.switchCalls[0] != [2]string{"Halsh Cloud", "NodeB"} {
 		t.Fatalf("unexpected switch calls: %#v", svc.switchCalls)
 	}
-	if len(svc.setTUNCalls) != 1 || !svc.setTUNCalls[0] {
-		t.Fatalf("expected tun on, got %#v", svc.setTUNCalls)
+	if len(svc.setTUNCalls) != 0 {
+		t.Fatalf("auto failover must not change tun, got %#v", svc.setTUNCalls)
+	}
+}
+
+func TestAutoProbeIgnoresResultFromPreviousSession(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
+	model := newTestModel(svc)
+	model.autoGroups["Halsh Cloud"] = &autoGroup{Enabled: true, Nodes: map[string]bool{"NodeA": true, "NodeB": true}}
+
+	next, cmd := model.Update(autoProbeMsg{
+		group:         "Halsh Cloud",
+		profileName:   "previous",
+		profileTarget: "http://127.0.0.1:9091",
+		best:          "NodeB",
+	})
+	model = next.(Model)
+	if cmd != nil || len(svc.switchCalls) != 0 {
+		t.Fatalf("stale auto probe must not change active session")
 	}
 }
 

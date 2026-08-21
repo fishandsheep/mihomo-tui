@@ -59,7 +59,6 @@ type Service interface {
 	SwitchProxy(context.Context, profile.Profile, string, string) (compat.Proxy, error)
 	RunDelay(context.Context, profile.Profile, string) (api.DelayResult, error)
 	LoadIPInfo(context.Context, profile.Profile) (api.IPInfo, error)
-	LoadDirectIPInfo(context.Context) (api.IPInfo, error)
 }
 
 type controllerService struct{}
@@ -118,7 +117,6 @@ type Model struct {
 	ipInfoErr            string
 	ipInfoUpdatedAt      time.Time
 	ipInfoNextRefreshAt  time.Time
-	noProxyMode          bool
 	events               []string
 	preferredGroupByMode map[string]string
 	autoGroups           map[string]*autoGroup
@@ -138,8 +136,10 @@ type modeChangedMsg struct {
 }
 
 type tunChangedMsg struct {
-	config compat.Config
-	err    error
+	config    compat.Config
+	err       error
+	previous  bool
+	requested bool
 }
 
 type proxyChangedMsg struct {
@@ -154,10 +154,12 @@ type delayResultMsg struct {
 }
 
 type autoProbeMsg struct {
-	group     string
-	best      string
-	currentOK bool
-	allDown   bool
+	group         string
+	profileName   string
+	profileTarget string
+	best          string
+	currentOK     bool
+	allDown       bool
 }
 
 type ipInfoLoadedMsg struct {
@@ -250,9 +252,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadSnapshotCmd()
 	case tunChangedMsg:
 		if msg.err != nil {
+			m.snapshot.Config.TunEnabled = msg.previous
+			m.snapshot.Config.TunSupported = true
 			m.toast = statusMessage(msg.err)
 			m.pushEvent("tun change failed: " + m.toast)
 			return m, nil
+		}
+		if !msg.config.TunSupported {
+			msg.config.TunEnabled = msg.requested
+			msg.config.TunSupported = true
 		}
 		m.snapshot.Config = msg.config
 		state := "off"
@@ -294,32 +302,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.group == "" {
 			return m, nil
 		}
+		if m.activeProfile.Name != msg.profileName || m.activeProfile.Target() != msg.profileTarget {
+			return m, nil
+		}
+		auto := m.autoGroups[msg.group]
+		if auto == nil || !auto.Enabled {
+			return m, nil
+		}
 		group := m.currentGroup()
 		if group.Name != msg.group {
 			return m, nil
 		}
 		if msg.allDown {
-			m.noProxyMode = true
-			m.toast = "auto group down: no proxy mode"
+			m.toast = "auto group down: keeping current route"
 			m.pushEvent(m.toast)
-			return m, tea.Batch(m.setTUNCmd(false), m.loadIPInfoCmd())
+			return m, nil
 		}
-		if msg.currentOK && !m.noProxyMode {
+		if msg.currentOK {
 			return m, nil
 		}
 		if msg.best == "" || group.Now == msg.best {
-			if m.noProxyMode {
-				m.noProxyMode = false
-				m.toast = "auto group recovered: " + valueOrDash(msg.best)
-				m.pushEvent(m.toast)
-				return m, tea.Batch(m.setTUNCmd(true), m.loadIPInfoCmd())
-			}
 			return m, nil
 		}
-		m.noProxyMode = false
 		m.toast = "auto group recovered: " + msg.best
 		m.pushEvent(m.toast)
-		return m, tea.Batch(m.switchProxyCmd(msg.group, msg.best), m.setTUNCmd(true))
+		return m, m.switchProxyCmd(msg.group, msg.best)
 	case ipInfoLoadedMsg:
 		if msg.err != nil {
 			m.ipInfoErr = statusMessage(msg.err)
@@ -372,7 +379,6 @@ func (m Model) renderState() view.State {
 		ConnectionText: m.connectionStatusText(),
 		DelaySupported: m.capabilities.Delay,
 		IPRefreshText:  m.ipInfoRefreshText(),
-		NoProxyMode:    m.noProxyMode,
 		ActivePane:     view.Pane(m.activePane),
 		SessionItems:   m.sessionItems(),
 		TUNItems:       m.tunItems(),
@@ -573,11 +579,10 @@ func (m Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.activePane = PaneTUN
 		if index, ok := view.ListIndexAt(layout.TUN, msg.X, msg.Y, len(m.tunItems()), m.tunOffset); ok {
 			m.tunCursor = index
-			m.ensureOffsets()
-			if m.registerDoubleClick(PaneTUN, index) {
-				return m.handleTUNToggle()
-			}
 		}
+		m.ensureOffsets()
+		m.registerDoubleClick(PaneTUN, m.tunCursor)
+		return m.handleTUNToggle()
 	case view.PaneGroups:
 		m.activePane = PaneGroups
 		if index, ok := view.ListIndexAt(layout.Groups, msg.X, msg.Y, len(m.visibleGroups()), m.groupOffset); ok {
@@ -637,7 +642,18 @@ func (m Model) handleSpace() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTUNToggle() (tea.Model, tea.Cmd) {
-	return m, m.setTUNCmd(!m.snapshot.Config.TunEnabled)
+	previous := m.snapshot.Config.TunEnabled
+	enabled := !previous
+	m.snapshot.Config.TunEnabled = enabled
+	m.snapshot.Config.TunSupported = true
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	m.toast = "tun -> " + state
+	m.pushEvent(m.toast)
+	m.ensureOffsets()
+	return m, m.setTUNCmdWithPrevious(enabled, previous)
 }
 
 func (m *Model) toggleAutoNode() {
@@ -963,11 +979,15 @@ func (m Model) setModeCmd(mode string) tea.Cmd {
 }
 
 func (m Model) setTUNCmd(enabled bool) tea.Cmd {
+	return m.setTUNCmdWithPrevious(enabled, m.snapshot.Config.TunEnabled)
+}
+
+func (m Model) setTUNCmdWithPrevious(enabled, previous bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		config, err := m.svc.SetTUN(ctx, m.activeProfile, enabled)
-		return tunChangedMsg{config: config, err: err}
+		return tunChangedMsg{config: config, err: err, previous: previous, requested: enabled}
 	}
 }
 
@@ -1002,21 +1022,30 @@ func (m Model) autoProbeCmd() tea.Cmd {
 	service := m.svc
 	current := group.Now
 	return func() tea.Msg {
-		timeout := time.Duration(len(targets)) * 6 * time.Second
-		if timeout < 8*time.Second {
-			timeout = 8 * time.Second
+		totalTimeout := time.Duration(len(targets)) * 6 * time.Second
+		if totalTimeout < 8*time.Second {
+			totalTimeout = 8 * time.Second
 		}
-		if timeout > 30*time.Second {
-			timeout = 30 * time.Second
+		if totalTimeout > 30*time.Second {
+			totalTimeout = 30 * time.Second
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
+		deadline := time.Now().Add(totalTimeout)
 
 		best := ""
 		bestDelay := 0
 		currentOK := false
 		for _, name := range targets {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			timeout := 6 * time.Second
+			if remaining < timeout {
+				timeout = remaining
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			result, err := service.RunDelay(ctx, profile, name)
+			cancel()
 			if err != nil || result.Delay <= 0 {
 				continue
 			}
@@ -1029,10 +1058,12 @@ func (m Model) autoProbeCmd() tea.Cmd {
 			}
 		}
 		return autoProbeMsg{
-			group:     group.Name,
-			best:      best,
-			currentOK: currentOK,
-			allDown:   best == "",
+			group:         group.Name,
+			profileName:   profile.Name,
+			profileTarget: profile.Target(),
+			best:          best,
+			currentOK:     currentOK,
+			allDown:       best == "",
 		}
 	}
 }
@@ -1071,10 +1102,6 @@ func (m Model) loadIPInfoCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		if m.noProxyMode {
-			info, err := m.svc.LoadDirectIPInfo(ctx)
-			return ipInfoLoadedMsg{info: info, err: err}
-		}
 		info, err := m.svc.LoadIPInfo(ctx, m.activeProfile)
 		return ipInfoLoadedMsg{info: info, err: err}
 	}
@@ -1204,7 +1231,7 @@ func (m Model) nodeItems() []view.Item {
 func (m Model) mainDetail(group compat.ProxyGroup, node string) string {
 	switch m.activeMainTab {
 	case MainTabInspector:
-		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.autoGroups[group.Name], m.noProxyMode, m.connectionErr, m.ipInfo, m.ipInfoErr, m.ipInfoUpdatedAt, m.ipInfoRefreshText())
+		return inspectorDetail(m.snapshot, m.activeProfile, m.capabilities, group, node, m.autoGroups[group.Name], m.connectionErr, m.ipInfo, m.ipInfoErr, m.ipInfoUpdatedAt, m.ipInfoRefreshText())
 	case MainTabDelay:
 		return delayHistoryDetail(m.snapshot, group, node)
 	case MainTabEvents:
@@ -1325,7 +1352,7 @@ func resolveActiveProfile(opts Options, sessions []sessionEntry) profile.Profile
 	return profile.Profile{Name: "no-session"}
 }
 
-func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node string, auto *autoGroup, noProxyMode bool, connectionErr string, ipInfo api.IPInfo, ipInfoErr string, ipInfoUpdatedAt time.Time, ipRefreshText string) string {
+func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps compat.Capabilities, group compat.ProxyGroup, node string, auto *autoGroup, connectionErr string, ipInfo api.IPInfo, ipInfoErr string, ipInfoUpdatedAt time.Time, ipRefreshText string) string {
 	lines := []string{
 		"Session",
 		"  name: " + valueOrDash(active.Name),
@@ -1341,16 +1368,10 @@ func inspectorDetail(snapshot compat.Snapshot, active profile.Profile, caps comp
 	if connectionErr != "" {
 		lines = append(lines, "  error: "+connectionErr)
 	}
-	ipTitle := "IP Info"
-	ipMode := "proxied"
-	if noProxyMode {
-		ipTitle = "IP Info (no proxy mode)"
-		ipMode = "no proxy"
-	}
 	lines = append(lines,
 		"",
-		ipTitle,
-		"  mode: "+ipMode,
+		"IP Info",
+		"  mode: proxied",
 		"  ip: "+valueOrDash(ipInfo.IP),
 		"  hostname: "+valueOrDash(ipInfo.Hostname),
 		"  city: "+valueOrDash(ipInfo.City),
@@ -1679,14 +1700,30 @@ func (controllerService) SetTUN(ctx context.Context, p profile.Profile, enabled 
 	if err := client.PatchTUN(ctx, enabled); err != nil {
 		return compat.Config{}, err
 	}
-	configRaw, err := client.GetConfigs(ctx)
-	if err != nil {
-		return compat.Config{}, err
+	var last compat.Config
+	for attempt := 0; attempt < 6; attempt++ {
+		configRaw, err := client.GetConfigs(ctx)
+		if err != nil {
+			return compat.Config{}, err
+		}
+		last = compat.NormalizeConfig(configRaw)
+		if last.TunSupported && last.TunEnabled == enabled {
+			return last, nil
+		}
+		if attempt < 5 {
+			timer := time.NewTimer(200 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return last, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	config := compat.NormalizeConfig(configRaw)
-	config.TunEnabled = enabled
-	config.TunSupported = true
-	return config, nil
+	if !last.TunSupported {
+		return compat.Config{}, fmt.Errorf("controller does not report TUN state after update")
+	}
+	return compat.Config{}, fmt.Errorf("controller did not apply TUN=%t (reported %t)", enabled, last.TunEnabled)
 }
 
 func (controllerService) SwitchProxy(ctx context.Context, p profile.Profile, group, node string) (compat.Proxy, error) {
@@ -1709,16 +1746,12 @@ func (controllerService) RunDelay(ctx context.Context, p profile.Profile, name s
 func (controllerService) LoadIPInfo(ctx context.Context, p profile.Profile) (api.IPInfo, error) {
 	configRaw, err := api.New(p.ControllerURL, p.UnixSocket, p.Secret, p.TLSSkipVerify).GetConfigs(ctx)
 	if err != nil {
-		return api.GetIPInfo(ctx)
+		return api.IPInfo{}, fmt.Errorf("load proxy config: %w", err)
 	}
 	if endpoint := proxyEndpoint(p, compat.NormalizeConfig(configRaw)); endpoint != "" {
 		return api.FetchIPInfoViaHTTPProxy(ctx, api.IPInfoURL, endpoint)
 	}
-	return api.GetIPInfo(ctx)
-}
-
-func (controllerService) LoadDirectIPInfo(ctx context.Context) (api.IPInfo, error) {
-	return api.GetIPInfo(ctx)
+	return api.IPInfo{}, fmt.Errorf("Mihomo HTTP or mixed proxy port unavailable; cannot verify proxied IP")
 }
 
 func proxyEndpoint(p profile.Profile, config compat.Config) string {

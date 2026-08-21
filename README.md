@@ -82,7 +82,7 @@ go build -o ./bin/mihomo-tui ./cmd/tui
   - nodes: switch proxy
 - `a` marks/unmarks the selected node for the current local auto group
 - `A` turns the current local auto group on/off
-- if every marked node is down, auto mode turns TUN off and shows IP Info in no-proxy mode until a node recovers
+- if every marked node is down, auto mode keeps TUN and current route unchanged, then shows an alert
 - `r` refreshes controller data and public IP info
 - mouse
   - single click: focus/select
@@ -97,8 +97,9 @@ the Main header and Inspector detail show the refresh countdown.
 
 When the active controller exposes `mixed-port` or `port` in `/configs`, IP info
 requests are sent through that local Mihomo proxy port so changing Nodes updates
-the observed public IP. Unix socket controllers cannot expose a proxy host, so IP
-info falls back to direct requests unless a controller URL is used.
+the observed public IP. If no HTTP or mixed proxy port is available (including a
+Unix-socket-only controller), Mihomo TUI reports that proxied IP verification is
+unavailable instead of displaying a misleading direct IP.
 
 Fallback, URLTest, and selector entries in the Nodes pane show their concrete
 selected node, for example `故障转移  [VIP1 英国]  [up] -`.
@@ -114,11 +115,10 @@ current node as long as that node is reachable, so it does not switch just becau
 another marked node has lower latency. When the current node is unreachable, it
 fails over to the reachable marked node with the lowest delay.
 
-If every marked node is unreachable, mihomo-tui turns TUN off and loads IP Info
-without using the Mihomo proxy. The Inspector shows `IP Info (no proxy mode)` in
-a warning color while this fallback is active. When a marked node becomes
-reachable again, auto mode switches back to the best reachable node and turns TUN
-on.
+If every marked node is unreachable, mihomo-tui leaves TUN and current route
+unchanged. It reports the condition and retries on the next refresh. When a
+marked node becomes reachable again, auto mode switches to the best reachable
+node when the current node remains unreachable.
 
 ## Build
 

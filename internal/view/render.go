@@ -82,7 +82,6 @@ type State struct {
 	Meta           string
 	DelaySupported bool
 	IPRefreshText  string
-	NoProxyMode    bool
 
 	ActivePane   Pane
 	SessionItems []Item
@@ -252,9 +251,6 @@ func renderListPane(title string, rect Rect, focused bool, items []Item, cursor,
 func renderMainPane(title string, rect Rect, state State) []string {
 	innerWidth := max(0, rect.W-2)
 	ipText := fmt.Sprintf("ip %s", empty(state.IPRefreshText))
-	if state.NoProxyMode {
-		ipText = "ip no-proxy"
-	}
 	chrome := []string{
 		renderMainInfoLine(innerWidth,
 			fmt.Sprintf("session %s", empty(state.Instance)),
@@ -281,10 +277,6 @@ func renderMainPane(title string, rect Rect, state State) []string {
 			continue
 		}
 		line := padPlain(detailLines[index], innerWidth)
-		if strings.Contains(detailLines[index], "IP Info (no proxy mode)") || strings.Contains(detailLines[index], "mode: no proxy") {
-			body = append(body, mainToastNormal.Render(line))
-			continue
-		}
 		body = append(body, textStyle.Render(line))
 	}
 	return renderPane(title, rect, state.ActivePane == PaneMain, body)
