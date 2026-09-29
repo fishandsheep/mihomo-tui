@@ -164,6 +164,13 @@ func newMockController(name string) *mockController {
 						"alive":   true,
 						"testUrl": compat.DefaultTestURL,
 					},
+					"GLOBAL": map[string]any{
+						"name":  "GLOBAL",
+						"type":  "Selector",
+						"now":   state.groupNow,
+						"all":   []string{"NodeA", "NodeB", "Halsh Cloud"},
+						"alive": true,
+					},
 					"NodeA": map[string]any{
 						"name":    "NodeA",
 						"type":    "Trojan",
@@ -190,6 +197,9 @@ func newMockController(name string) *mockController {
 			json.NewDecoder(r.Body).Decode(&body)
 			state.groupNow = body["name"]
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/proxies/GLOBAL/delay":
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Body invalid"})
 		case r.Method == http.MethodGet && r.URL.Path == "/proxies/Halsh Cloud/delay":
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"message": "Body invalid"})
@@ -225,6 +235,12 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 						"now":  "NodeA",
 						"all":  []string{"NodeA"},
 					},
+					"GLOBAL": map[string]any{
+						"name": "GLOBAL",
+						"type": "Selector",
+						"now":  "NodeA",
+						"all":  []string{"NodeA", "Halsh Cloud"},
+					},
 				},
 			})
 		default:
@@ -243,7 +259,7 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 	if caps.Delay {
 		t.Fatalf("expected delay unsupported")
 	}
-	if len(snapshot.Groups) != 1 {
+	if len(snapshot.Groups) != 2 {
 		t.Fatalf("unexpected snapshot groups: %#v", snapshot.Groups)
 	}
 }
@@ -251,9 +267,11 @@ func TestControllerServiceDelayCapabilityFallback(t *testing.T) {
 func TestControllerServiceSetTUNReturnsErrorWhenBackendDoesNotConfirm(t *testing.T) {
 	t.Parallel()
 
+	patches := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPatch && r.URL.Path == "/configs":
+			patches++
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/configs":
 			json.NewEncoder(w).Encode(map[string]any{"mode": "rule", "tun": map[string]bool{"enable": false}})
@@ -269,6 +287,105 @@ func TestControllerServiceSetTUNReturnsErrorWhenBackendDoesNotConfirm(t *testing
 	}, true)
 	if err == nil || !strings.Contains(err.Error(), "did not apply TUN=true") {
 		t.Fatalf("expected unconfirmed TUN error, got %v", err)
+	}
+	if want := 1 + tunMaxDeviceCandidates; patches != want {
+		t.Fatalf("expected %d patch attempts (default + device candidates), got %d", want, patches)
+	}
+}
+
+func TestControllerServiceSetTUNRetriesWithAlternateDevice(t *testing.T) {
+	t.Parallel()
+
+	type patchCall struct {
+		enable bool
+		device string
+	}
+	mu := sync.Mutex{}
+	var patches []patchCall
+	applied := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/configs":
+			var body struct {
+				Tun struct {
+					Enable bool   `json:"enable"`
+					Device string `json:"device"`
+				} `json:"tun"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode patch body: %v", err)
+			}
+			mu.Lock()
+			patches = append(patches, patchCall{enable: body.Tun.Enable, device: body.Tun.Device})
+			mu.Unlock()
+			// Simulate the stale-device failure: only a patch with a fresh
+			// device name is applied, the default name stays unconfirmed.
+			if body.Tun.Enable && body.Tun.Device != "" {
+				applied = body.Tun.Device
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/configs":
+			mu.Lock()
+			device := applied
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{
+				"mode": "rule",
+				"tun":  map[string]any{"enable": device != "", "device": device},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config, err := controllerService{}.SetTUN(context.Background(), profile.Profile{
+		Name:          "one",
+		ControllerURL: server.URL,
+	}, true)
+	if err != nil {
+		t.Fatalf("SetTUN should recover via alternate device, got %v", err)
+	}
+	if !config.TunEnabled {
+		t.Fatalf("expected confirmed tun state, got %#v", config)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(patches) != 2 {
+		t.Fatalf("expected default + first free device patch, got %#v", patches)
+	}
+	if patches[0].device != "" || patches[1].device == "" {
+		t.Fatalf("unexpected patch sequence: %#v", patches)
+	}
+	if applied != patches[1].device {
+		t.Fatalf("expected applied device %q to match final patch, got %q", patches[1].device, applied)
+	}
+}
+
+func TestNextTUNDeviceCandidatesSkipUsedNames(t *testing.T) {
+	t.Parallel()
+
+	// Simulate three leaked devices, as left behind by mihomo disable bugs.
+	candidates := nextTUNDeviceCandidates(map[string]bool{
+		"Meta": true, "mihomo-tui": true, "mihomo-tui-2": true, "lo": true, "wlp5s0": true,
+	})
+	if len(candidates) != tunMaxDeviceCandidates {
+		t.Fatalf("expected %d candidates, got %#v", tunMaxDeviceCandidates, candidates)
+	}
+	if candidates[0] != "mihomo-tui-3" {
+		t.Fatalf("expected first free candidate mihomo-tui-3, got %q", candidates[0])
+	}
+	seen := map[string]bool{}
+	for _, name := range candidates {
+		if seen[name] || name == "mihomo-tui" || name == "mihomo-tui-2" {
+			t.Fatalf("unexpected duplicate or used candidate: %#v", candidates)
+		}
+		seen[name] = true
+	}
+
+	candidates = nextTUNDeviceCandidates(map[string]bool{})
+	if len(candidates) != tunMaxDeviceCandidates || candidates[0] != "mihomo-tui" {
+		t.Fatalf("expected clean slate to start at mihomo-tui, got %#v", candidates)
 	}
 }
 
@@ -333,5 +450,23 @@ func TestProxyEndpointPrefersMixedPort(t *testing.T) {
 	})
 	if endpoint != "http://127.0.0.1:7890" {
 		t.Fatalf("unexpected proxy endpoint: %q", endpoint)
+	}
+}
+
+func TestProxyEndpointUsesLocalhostForUnixSocket(t *testing.T) {
+	endpoint := proxyEndpoint(profile.Profile{UnixSocket: "/tmp/verge/verge-mihomo.sock"}, compat.Config{
+		MixedPort: 7897,
+	})
+	if endpoint != "http://127.0.0.1:7897" {
+		t.Fatalf("unexpected unix-socket proxy endpoint: %q", endpoint)
+	}
+}
+
+func TestProxyEndpointWithoutPortsReturnsEmpty(t *testing.T) {
+	if endpoint := proxyEndpoint(profile.Profile{UnixSocket: "/tmp/verge/verge-mihomo.sock"}, compat.Config{}); endpoint != "" {
+		t.Fatalf("expected empty endpoint without ports, got %q", endpoint)
+	}
+	if endpoint := proxyEndpoint(profile.Profile{ControllerURL: "http://192.168.1.4:9090"}, compat.Config{Port: 7891}); endpoint != "http://192.168.1.4:7891" {
+		t.Fatalf("expected remote controller host fallback to http port, got %q", endpoint)
 	}
 }

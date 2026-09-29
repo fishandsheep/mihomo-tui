@@ -210,32 +210,30 @@ func TestTUNToggleBySpaceAndMouse(t *testing.T) {
 
 	next, cmd = model.Update(pos)
 	model = next.(Model)
-	if cmd == nil {
-		t.Fatalf("tun click should trigger command")
+	if cmd != nil {
+		t.Fatalf("single tun click should only focus, got command")
 	}
-	if !model.snapshot.Config.TunEnabled {
-		t.Fatalf("expected optimistic tun enabled after click")
+	if model.activePane != PaneTUN {
+		t.Fatalf("expected tun pane focused after click, got %v", model.activePane)
 	}
-	model, _ = runCmd(t, model, cmd)
-	if len(mouseSvc.setTUNCalls) != 1 || !mouseSvc.setTUNCalls[0] {
-		t.Fatalf("unexpected tun calls after click: %#v", mouseSvc.setTUNCalls)
+	if len(mouseSvc.setTUNCalls) != 0 {
+		t.Fatalf("single tun click must not toggle: %#v", mouseSvc.setTUNCalls)
 	}
-	if !model.snapshot.Config.TunEnabled {
-		t.Fatalf("expected tun enabled after click")
-	}
-
-	mouseSvc = &fakeService{snapshot: fixtureSnapshot(), caps: compat.Capabilities{Delay: true}}
-	model = newTestModel(mouseSvc)
-	layout = view.ComputeLayout(model.renderState())
-	pos = mouseClick(layout.TUN.X+2, layout.TUN.Y)
 
 	next, cmd = model.Update(pos)
 	model = next.(Model)
 	if cmd == nil {
-		t.Fatalf("tun title click should trigger command")
+		t.Fatalf("double tun click should trigger command")
 	}
 	if !model.snapshot.Config.TunEnabled {
-		t.Fatalf("expected optimistic tun enabled after title click")
+		t.Fatalf("expected optimistic tun enabled after double click")
+	}
+	model, _ = runCmd(t, model, cmd)
+	if len(mouseSvc.setTUNCalls) != 1 || !mouseSvc.setTUNCalls[0] {
+		t.Fatalf("unexpected tun calls after double click: %#v", mouseSvc.setTUNCalls)
+	}
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected tun enabled after double click")
 	}
 }
 
@@ -256,8 +254,11 @@ func TestTUNToggleFailureRollsBackOptimisticState(t *testing.T) {
 	if model.snapshot.Config.TunEnabled {
 		t.Fatalf("expected tun rollback after failure")
 	}
-	if model.toast != "boom" {
+	if model.toast != "tun change failed: boom" {
 		t.Fatalf("expected error toast, got %q", model.toast)
+	}
+	if model.tunErr != "boom" {
+		t.Fatalf("expected persisted tun error, got %q", model.tunErr)
 	}
 }
 
@@ -562,8 +563,8 @@ func TestVisibleGroupsFollowMode(t *testing.T) {
 
 	model.snapshot.Config.Mode = "rule"
 	groups := model.visibleGroups()
-	if len(groups) != 1 || groups[0].Name != "Halsh Cloud" {
-		t.Fatalf("rule mode should show only Halsh Cloud, got %#v", groups)
+	if len(groups) != 2 || groups[0].Name != "Halsh Cloud" || groups[1].Name != "Auto" {
+		t.Fatalf("rule mode should show all non-global groups, got %#v", groups)
 	}
 
 	model.snapshot.Config.Mode = "global"
@@ -573,8 +574,81 @@ func TestVisibleGroupsFollowMode(t *testing.T) {
 	}
 
 	model.snapshot.Config.Mode = "direct"
-	if got := len(model.visibleGroups()); got != 0 {
-		t.Fatalf("direct mode should hide groups, got %d", got)
+	groups = model.visibleGroups()
+	if len(groups) != 2 || groups[0].Name != "Halsh Cloud" || groups[1].Name != "Auto" {
+		t.Fatalf("direct mode should show all non-global groups, got %#v", groups)
+	}
+}
+
+func TestTUNFailurePersistsErrorAndRevertsState(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot: fixtureSnapshot(),
+		caps:     compat.Capabilities{Delay: true},
+		tunErr:   errors.New("controller did not apply TUN=true (reported false)"),
+	}
+	model := newTestModel(svc)
+	model.activePane = PaneTUN
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = next.(Model)
+	if !model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected optimistic tun on before confirmation")
+	}
+	msg := cmd()
+	next, _ = model.Update(msg)
+	model = next.(Model)
+	if model.snapshot.Config.TunEnabled {
+		t.Fatalf("expected tun reverted to off after failure")
+	}
+	if model.tunErr == "" {
+		t.Fatalf("expected tun error to persist after failure")
+	}
+	if !strings.Contains(model.toast, "tun change failed:") {
+		t.Fatalf("expected failure toast, got %q", model.toast)
+	}
+	detail := model.mainDetail(model.currentGroup(), model.selectedNode())
+	if !strings.Contains(detail, "tun error: controller did not apply TUN=true") {
+		t.Fatalf("expected tun error in inspector detail:\n%s", detail)
+	}
+
+	svc.tunErr = nil
+	next, cmd = model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = next.(Model)
+	msg = cmd()
+	next, _ = model.Update(msg)
+	model = next.(Model)
+	if !model.snapshot.Config.TunEnabled || model.tunErr != "" {
+		t.Fatalf("expected successful retry to enable tun and clear error, tun=%t err=%q", model.snapshot.Config.TunEnabled, model.tunErr)
+	}
+}
+
+func TestSwitchProxyVerifiesNodeReachability(t *testing.T) {
+	t.Parallel()
+
+	svc := &fakeService{
+		snapshot:       fixtureSnapshot(),
+		caps:           compat.Capabilities{Delay: true},
+		delayByName:    map[string]int{"NodeA": 30},
+		delayErrByName: map[string]error{"NodeB": &api.Error{Kind: api.ErrTimeout}},
+	}
+	model := newTestModel(svc)
+
+	next, cmd := model.Update(proxyChangedMsg{proxy: compat.Proxy{Name: "Halsh Cloud", Now: "NodeA"}})
+	model = runBatchCmd(t, next.(Model), cmd)
+	if !strings.Contains(model.toast, "node ok: NodeA") || !strings.Contains(model.toast, "30ms") {
+		t.Fatalf("expected reachable verification toast, got %q", model.toast)
+	}
+
+	next, cmd = model.Update(proxyChangedMsg{proxy: compat.Proxy{Name: "Halsh Cloud", Now: "NodeB"}})
+	model = runBatchCmd(t, next.(Model), cmd)
+	if !strings.Contains(model.toast, "node unreachable: NodeB") {
+		t.Fatalf("expected unreachable verification toast, got %q", model.toast)
+	}
+	events := strings.Join(model.events, "\n")
+	if !strings.Contains(events, "unreachable") {
+		t.Fatalf("expected unreachable event logged, got %q", events)
 	}
 }
 

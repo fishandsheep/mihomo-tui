@@ -65,6 +65,21 @@ type IPInfo struct {
 
 const IPInfoURL = "https://ipinfo.io/json"
 
+type ipProvider struct {
+	endpoint string
+	decode   func([]byte) (IPInfo, error)
+}
+
+// ipInfoProviders are tried in order; the first successful response wins.
+// ipinfo.io is richest but rate-limits shared exit IPs, so fall back to other
+// free sources and finally to Cloudflare's trace endpoint (IP only).
+var ipInfoProviders = []ipProvider{
+	{endpoint: IPInfoURL, decode: decodeIPInfoBody},
+	{endpoint: "https://ipwho.is/", decode: decodeIPWhoIsBody},
+	{endpoint: "http://ip-api.com/json/", decode: decodeIPAPIBody},
+	{endpoint: "https://www.cloudflare.com/cdn-cgi/trace", decode: decodeCloudflareTraceBody},
+}
+
 func New(baseURL, unixSocket, secret string, tlsSkipVerify bool) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	resolvedBaseURL := strings.TrimRight(baseURL, "/")
@@ -108,9 +123,13 @@ func (c *Client) PutMode(ctx context.Context, mode string) error {
 	return c.doJSON(ctx, http.MethodPut, "/configs", map[string]string{"mode": mode}, nil)
 }
 
-func (c *Client) PatchTUN(ctx context.Context, enabled bool) error {
+func (c *Client) PatchTUN(ctx context.Context, enabled bool, device string) error {
+	tun := map[string]any{"enable": enabled}
+	if device != "" {
+		tun["device"] = device
+	}
 	return c.doJSON(ctx, http.MethodPatch, "/configs", map[string]any{
-		"tun": map[string]bool{"enable": enabled},
+		"tun": tun,
 	}, nil)
 }
 
@@ -146,45 +165,193 @@ func (c *Client) ProbeDelayEndpoint(ctx context.Context, name string) error {
 }
 
 func GetIPInfo(ctx context.Context) (IPInfo, error) {
-	return FetchIPInfo(ctx, IPInfoURL)
+	return FetchIPInfo(ctx)
 }
 
-func FetchIPInfo(ctx context.Context, endpoint string) (IPInfo, error) {
-	return fetchIPInfo(ctx, endpoint, http.DefaultTransport.(*http.Transport).Clone())
+func FetchIPInfo(ctx context.Context) (IPInfo, error) {
+	return fetchIPInfoChain(ctx, ipInfoProviders, nil)
 }
 
-func FetchIPInfoViaHTTPProxy(ctx context.Context, endpoint, proxyEndpoint string) (IPInfo, error) {
+func FetchIPInfoViaHTTPProxy(ctx context.Context, proxyEndpoint string) (IPInfo, error) {
 	proxyURL, err := url.Parse(proxyEndpoint)
 	if err != nil {
 		return IPInfo{}, err
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(proxyURL)
-	return fetchIPInfo(ctx, endpoint, transport)
+	return fetchIPInfoChain(ctx, ipInfoProviders, transport)
 }
 
-func fetchIPInfo(ctx context.Context, endpoint string, transport http.RoundTripper) (IPInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+func fetchIPInfoChain(ctx context.Context, providers []ipProvider, transport http.RoundTripper) (IPInfo, error) {
+	failures := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		info, err := fetchIPInfoFrom(ctx, provider, transport)
+		if err == nil {
+			return info, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", provider.host(), err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return IPInfo{}, fmt.Errorf("all IP info providers failed: %s", strings.Join(failures, "; "))
+}
+
+func (p ipProvider) host() string {
+	parsed, err := url.Parse(p.endpoint)
+	if err != nil || parsed.Host == "" {
+		return p.endpoint
+	}
+	return parsed.Host
+}
+
+func fetchIPInfoFrom(ctx context.Context, provider ipProvider, transport http.RoundTripper) (IPInfo, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, provider.endpoint, nil)
 	if err != nil {
 		return IPInfo{}, err
 	}
-	client := &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: transport,
-	}
+	client := &http.Client{Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return IPInfo{}, mapError(err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return IPInfo{}, decodeHTTPError(resp)
 	}
-	var out IPInfo
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
 		return IPInfo{}, err
 	}
+	return provider.decode(body)
+}
+
+func decodeIPInfoBody(body []byte) (IPInfo, error) {
+	var out IPInfo
+	if err := json.Unmarshal(body, &out); err != nil {
+		return IPInfo{}, err
+	}
+	if out.IP == "" {
+		return IPInfo{}, errors.New("missing ip field")
+	}
 	return out, nil
+}
+
+func decodeIPWhoIsBody(body []byte) (IPInfo, error) {
+	var raw struct {
+		IP          string  `json:"ip"`
+		Message     string  `json:"message"`
+		City        string  `json:"city"`
+		Region      string  `json:"region"`
+		CountryCode string  `json:"country_code"`
+		Postal      string  `json:"postal"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+		Connection  struct {
+			ISP string `json:"isp"`
+			Org string `json:"org"`
+		} `json:"connection"`
+		Timezone struct {
+			ID string `json:"id"`
+		} `json:"timezone"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return IPInfo{}, err
+	}
+	if raw.Message != "" {
+		return IPInfo{}, errors.New(raw.Message)
+	}
+	if raw.IP == "" {
+		return IPInfo{}, errors.New("missing ip field")
+	}
+	org := raw.Connection.Org
+	if org == "" {
+		org = raw.Connection.ISP
+	}
+	return IPInfo{
+		IP:       raw.IP,
+		City:     raw.City,
+		Region:   raw.Region,
+		Country:  raw.CountryCode,
+		Postal:   raw.Postal,
+		Loc:      latLon(raw.Latitude, raw.Longitude),
+		Org:      org,
+		Timezone: raw.Timezone.ID,
+	}, nil
+}
+
+func decodeIPAPIBody(body []byte) (IPInfo, error) {
+	var raw struct {
+		Status      string  `json:"status"`
+		Message     string  `json:"message"`
+		Query       string  `json:"query"`
+		City        string  `json:"city"`
+		RegionName  string  `json:"regionName"`
+		CountryCode string  `json:"countryCode"`
+		Zip         string  `json:"zip"`
+		Lat         float64 `json:"lat"`
+		Lon         float64 `json:"lon"`
+		Timezone    string  `json:"timezone"`
+		ISP         string  `json:"isp"`
+		Org         string  `json:"org"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return IPInfo{}, err
+	}
+	if raw.Status != "success" {
+		if raw.Message != "" {
+			return IPInfo{}, errors.New(raw.Message)
+		}
+		return IPInfo{}, fmt.Errorf("status %q", raw.Status)
+	}
+	if raw.Query == "" {
+		return IPInfo{}, errors.New("missing query field")
+	}
+	org := raw.Org
+	if org == "" {
+		org = raw.ISP
+	}
+	return IPInfo{
+		IP:       raw.Query,
+		City:     raw.City,
+		Region:   raw.RegionName,
+		Country:  raw.CountryCode,
+		Postal:   raw.Zip,
+		Loc:      latLon(raw.Lat, raw.Lon),
+		Org:      org,
+		Timezone: raw.Timezone,
+	}, nil
+}
+
+func decodeCloudflareTraceBody(body []byte) (IPInfo, error) {
+	var out IPInfo
+	for _, line := range strings.Split(string(body), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "ip":
+			out.IP = value
+		case "loc":
+			out.Country = value
+		}
+	}
+	if out.IP == "" {
+		return IPInfo{}, errors.New("missing ip field in trace body")
+	}
+	return out, nil
+}
+
+func latLon(lat, lon float64) string {
+	if lat == 0 && lon == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%.4f,%.4f", lat, lon)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, out any) error {

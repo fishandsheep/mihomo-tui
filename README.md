@@ -66,10 +66,10 @@ go build -o ./bin/mihomo-tui ./cmd/tui
 - local auto groups: mark several nodes, then fail over to the lowest-delay reachable node only when the current node is down
 - nested group node visibility for fallback/auto-select entries
 - delay testing via `http://cp.cloudflare.com`
-- public IP info in Main via `https://ipinfo.io/json`, refreshed every 60s
+- public IP info in Main via `https://ipinfo.io/json` with automatic fallback to `ipwho.is`, `ip-api.com`, and Cloudflare trace, refreshed every 60s
 - full-screen, resize-safe, lazygit-inspired terminal layout
 - mouse-aware panes with double-click apply
-- mode-aware group filtering: `rule` shows `Halsh Cloud`, `global` shows `GLOBAL`
+- mode-aware group filtering: `rule`/`direct` show all config groups except `GLOBAL`, `global` shows `GLOBAL`
 
 ## Interaction
 
@@ -97,9 +97,10 @@ the Main header and Inspector detail show the refresh countdown.
 
 When the active controller exposes `mixed-port` or `port` in `/configs`, IP info
 requests are sent through that local Mihomo proxy port so changing Nodes updates
-the observed public IP. If no HTTP or mixed proxy port is available (including a
-Unix-socket-only controller), Mihomo TUI reports that proxied IP verification is
-unavailable instead of displaying a misleading direct IP.
+the observed public IP. Unix-socket controllers use `127.0.0.1` with the reported
+proxy port. If no HTTP or mixed proxy port is available, Mihomo TUI reports that
+proxied IP verification is unavailable instead of displaying a misleading direct
+IP.
 
 Fallback, URLTest, and selector entries in the Nodes pane show their concrete
 selected node, for example `故障转移  [VIP1 英国]  [up] -`.
